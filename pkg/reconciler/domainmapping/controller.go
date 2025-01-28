@@ -20,18 +20,18 @@ import (
 	"context"
 
 	"k8s.io/client-go/tools/cache"
-	network "knative.dev/networking/pkg"
 	netclient "knative.dev/networking/pkg/client/injection/client"
 	certificateinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate"
 	domainclaiminformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/clusterdomainclaim"
 	ingressinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/ingress"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/resolver"
-	"knative.dev/serving/pkg/apis/serving/v1alpha1"
-	"knative.dev/serving/pkg/client/injection/informers/serving/v1alpha1/domainmapping"
-	kindreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1alpha1/domainmapping"
+	"knative.dev/serving/pkg/apis/serving/v1beta1"
+	"knative.dev/serving/pkg/client/injection/informers/serving/v1beta1/domainmapping"
+	kindreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1beta1/domainmapping"
 	"knative.dev/serving/pkg/reconciler/domainmapping/config"
 )
 
@@ -52,7 +52,7 @@ func NewController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 
 	impl := kindreconciler.NewImpl(ctx, r, func(impl *controller.Impl) controller.Options {
 		configsToResync := []interface{}{
-			&network.Config{},
+			&netcfg.Config{},
 		}
 		resync := configmap.TypeFilter(configsToResync...)(func(string, interface{}) {
 			impl.GlobalResync(domainmappingInformer.Informer())
@@ -65,7 +65,7 @@ func NewController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 	domainmappingInformer.Informer().AddEventHandler(controller.HandleAll(impl.Enqueue))
 
 	handleControllerOf := cache.FilteringResourceEventHandler{
-		FilterFunc: controller.FilterController(&v1alpha1.DomainMapping{}),
+		FilterFunc: controller.FilterController(&v1beta1.DomainMapping{}),
 		Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 	}
 	certificateInformer.Informer().AddEventHandler(handleControllerOf)

@@ -22,11 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log"
+	"net"
 	"net/http"
 	"time"
 
 	// Injection stuff
 
+	"knative.dev/pkg/controller"
 	kubeinformerfactory "knative.dev/pkg/injection/clients/namespacedkube/informers/factory"
 	"knative.dev/pkg/network/handlers"
 
@@ -34,13 +37,15 @@ import (
 	"golang.org/x/sync/errgroup"
 	admissionv1 "k8s.io/api/admission/v1"
 	"knative.dev/pkg/logging"
-	"knative.dev/pkg/network"
 	"knative.dev/pkg/system"
-	certresources "knative.dev/pkg/webhook/certificates/resources"
 )
 
 // Options contains the configuration for the webhook
 type Options struct {
+	// TLSMinVersion contains the minimum TLS version that is acceptable to communicate with the API server.
+	// TLS 1.3 is the minimum version if not specified otherwise.
+	TLSMinVersion uint16
+
 	// ServiceName is the service name of the webhook.
 	ServiceName string
 
@@ -52,14 +57,50 @@ type Options struct {
 	// If no SecretName is provided, then the webhook serves without TLS.
 	SecretName string
 
+	// ServerPrivateKeyName is the name for the webhook secret's data key e.g. `tls.key`.
+	// Default value is `server-key.pem` if no value is passed.
+	ServerPrivateKeyName string
+
+	// ServerCertificateName is the name for the webhook secret's ca data key e.g. `tls.crt`.
+	// Default value is `server-cert.pem` if no value is passed.
+	ServerCertificateName string
+
 	// Port where the webhook is served. Per k8s admission
 	// registration requirements this should be 443 unless there is
 	// only a single port for the service.
 	Port int
 
+	// StatsReporterOptions are the options used to initialize the default StatsReporter
+	StatsReporterOptions []StatsReporterOption
+
 	// StatsReporter reports metrics about the webhook.
 	// This will be automatically initialized by the constructor if left uninitialized.
 	StatsReporter StatsReporter
+
+	// GracePeriod is how long to wait after failing readiness probes
+	// before shutting down.
+	GracePeriod time.Duration
+
+	// DisableNamespaceOwnership configures if the SYSTEM_NAMESPACE is added as an owner reference to the
+	// webhook configuration resources. Overridden by the WEBHOOK_DISABLE_NAMESPACE_OWNERSHIP environment variable.
+	// Disabling can be useful to avoid breaking systems that expect ownership to indicate a true controller
+	// relationship: https://github.com/knative/serving/issues/15483
+	DisableNamespaceOwnership bool
+
+	// ControllerOptions encapsulates options for creating a new controller,
+	// including throttling and stats behavior.
+	ControllerOptions *controller.ControllerOptions
+
+	// EnableHTTP2 enables HTTP2 for webhooks.
+	// Mitigate CVE-2023-44487 by disabling HTTP2 by default until the Go
+	// standard library and golang.org/x/net are fully fixed.
+	// Right now, it is possible for authenticated and unauthenticated users to
+	// hold open HTTP2 connections and consume huge amounts of memory.
+	// See:
+	// * https://github.com/kubernetes/kubernetes/pull/121120
+	// * https://github.com/kubernetes/kubernetes/issues/121197
+	// * https://github.com/golang/go/issues/63417#issuecomment-1758858612
+	EnableHTTP2 bool
 }
 
 // Operation is the verb being operated on
@@ -83,14 +124,13 @@ type Webhook struct {
 	// synced is function that is called when the informers have been synced.
 	synced context.CancelFunc
 
-	// grace period is how long to wait after failing readiness probes
-	// before shutting down.
-	gracePeriod time.Duration
-
 	mux http.ServeMux
 
 	// The TLS configuration to use for serving (or nil for non-TLS)
 	tlsConfig *tls.Config
+
+	// testListener is only used in testing so we don't get port conflicts
+	testListener net.Listener
 }
 
 // New constructs a Webhook
@@ -98,7 +138,6 @@ func New(
 	ctx context.Context,
 	controllers []interface{},
 ) (webhook *Webhook, err error) {
-
 	// ServeMux.Handle panics on duplicate paths
 	defer func() {
 		if r := recover(); r != nil {
@@ -113,20 +152,26 @@ func New(
 	logger := logging.FromContext(ctx)
 
 	if opts.StatsReporter == nil {
-		reporter, err := NewStatsReporter()
+		reporter, err := NewStatsReporter(opts.StatsReporterOptions...)
 		if err != nil {
 			return nil, err
 		}
 		opts.StatsReporter = reporter
 	}
 
+	defaultTLSMinVersion := uint16(tls.VersionTLS13)
+	if opts.TLSMinVersion == 0 {
+		opts.TLSMinVersion = TLSMinVersionFromEnv(defaultTLSMinVersion)
+	} else if opts.TLSMinVersion != tls.VersionTLS12 && opts.TLSMinVersion != tls.VersionTLS13 {
+		return nil, fmt.Errorf("unsupported TLS version: %d", opts.TLSMinVersion)
+	}
+
 	syncCtx, cancel := context.WithCancel(context.Background())
 
 	webhook = &Webhook{
-		Options:     *opts,
-		Logger:      logger,
-		synced:      cancel,
-		gracePeriod: network.DefaultDrainTimeout,
+		Options: *opts,
+		Logger:  logger,
+		synced:  cancel,
 	}
 
 	if opts.SecretName != "" {
@@ -137,8 +182,9 @@ func New(
 		// a new secret informer from it.
 		secretInformer := kubeinformerfactory.Get(ctx).Core().V1().Secrets()
 
+		//nolint:gosec // operator configures TLS min version (default is 1.3)
 		webhook.tlsConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion: opts.TLSMinVersion,
 
 			// If we return (nil, error) the client sees - 'tls: internal error"
 			// If we return (nil, nil) the client sees - 'tls: no certificates configured'
@@ -150,13 +196,14 @@ func New(
 					logger.Errorw("failed to fetch secret", zap.Error(err))
 					return nil, nil
 				}
-
-				serverKey, ok := secret.Data[certresources.ServerKey]
+				webOpts := GetOptions(ctx)
+				sKey, sCert := getSecretDataKeyNamesOrDefault(webOpts.ServerPrivateKeyName, webOpts.ServerCertificateName)
+				serverKey, ok := secret.Data[sKey]
 				if !ok {
 					logger.Warn("server key missing")
 					return nil, nil
 				}
-				serverCert, ok := secret.Data[certresources.ServerCert]
+				serverCert, ok := secret.Data[sCert]
 				if !ok {
 					logger.Warn("server cert missing")
 					return nil, nil
@@ -187,7 +234,6 @@ func New(
 		default:
 			return nil, fmt.Errorf("unknown webhook controller type:  %T", controller)
 		}
-
 	}
 
 	return
@@ -200,6 +246,15 @@ func (wh *Webhook) InformersHaveSynced() {
 	wh.Logger.Info("Informers have been synced, unblocking admission webhooks.")
 }
 
+type zapWrapper struct {
+	logger *zap.SugaredLogger
+}
+
+func (z *zapWrapper) Write(p []byte) (n int, err error) {
+	z.logger.Errorw(string(p))
+	return len(p), nil
+}
+
 // Run implements the admission controller run loop.
 func (wh *Webhook) Run(stop <-chan struct{}) error {
 	logger := wh.Logger
@@ -207,27 +262,45 @@ func (wh *Webhook) Run(stop <-chan struct{}) error {
 
 	drainer := &handlers.Drainer{
 		Inner:       wh,
-		QuietPeriod: wh.gracePeriod,
+		QuietPeriod: wh.Options.GracePeriod,
+	}
+
+	// If TLSNextProto is not nil, HTTP/2 support is not enabled automatically.
+	nextProto := map[string]func(*http.Server, *tls.Conn, http.Handler){}
+	if wh.Options.EnableHTTP2 {
+		nextProto = nil
 	}
 
 	server := &http.Server{
-		Handler:   drainer,
-		Addr:      fmt.Sprint(":", wh.Options.Port),
-		TLSConfig: wh.tlsConfig,
+		ErrorLog:          log.New(&zapWrapper{logger}, "", 0),
+		Handler:           drainer,
+		Addr:              fmt.Sprint(":", wh.Options.Port),
+		TLSConfig:         wh.tlsConfig,
+		ReadHeaderTimeout: time.Minute, // https://medium.com/a-journey-with-go/go-understand-and-mitigate-slowloris-attack-711c1b1403f6
+		TLSNextProto:      nextProto,
+	}
+
+	serve := server.ListenAndServe
+
+	if server.TLSConfig != nil && wh.testListener != nil {
+		serve = func() error {
+			return server.ServeTLS(wh.testListener, "", "")
+		}
+	} else if server.TLSConfig != nil {
+		serve = func() error {
+			return server.ListenAndServeTLS("", "")
+		}
+	} else if wh.testListener != nil {
+		serve = func() error {
+			return server.Serve(wh.testListener)
+		}
 	}
 
 	eg, ctx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
-		if server.TLSConfig != nil {
-			if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Errorw("ListenAndServeTLS for admission webhook returned error", zap.Error(err))
-				return err
-			}
-		} else {
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Errorw("ListenAndServe for admission webhook returned error", zap.Error(err))
-				return err
-			}
+		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Errorw("ListenAndServe for admission webhook returned error", zap.Error(err))
+			return err
 		}
 		return nil
 	})

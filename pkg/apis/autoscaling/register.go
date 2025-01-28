@@ -138,8 +138,6 @@ const (
 	// points will be missed entirely by the panic window which is
 	// smaller than the stable window. Anything less than 6 seconds
 	// isn't going to work well.
-	//
-	// nolint:revive // False positive, Min means minimum, not minutes.
 	WindowMin = 6 * time.Second
 	// WindowMax is the maximum permitted stable autoscaling window.
 	// This keeps the event horizon to a reasonable enough limit.
@@ -216,6 +214,13 @@ const (
 	// PanicThresholdPercentageMax is the counterpart to the PanicThresholdPercentageMin
 	// but bounding from above.
 	PanicThresholdPercentageMax = 1000.0
+
+	// ActivationScale is the minimum, non-zero value that a service should scale to.
+	// For example, if ActivationScale = 2, when a service scaled from zero it would
+	// scale up two replicas in this case. In essence, this allows one to set both a
+	// min-scale value while also preserving the ability to scale to zero.
+	// ActivationScale must be >= 2.
+	ActivationScaleKey = GroupName + "/activation-scale"
 )
 
 var (
@@ -226,6 +231,7 @@ var (
 		InitialScaleAnnotationKey,
 		GroupName + "/initialScale",
 	}
+
 	MaxScaleAnnotation = kmap.KeyPriority{
 		MaxScaleAnnotationKey,
 		GroupName + "/maxScale",
@@ -236,6 +242,9 @@ var (
 	MetricAggregationAlgorithmAnnotation = kmap.KeyPriority{
 		MetricAggregationAlgorithmKey,
 		GroupName + "/metricAggregationAlgorithm",
+	}
+	ActivationScale = kmap.KeyPriority{
+		ActivationScaleKey,
 	}
 	MinScaleAnnotation = kmap.KeyPriority{
 		MinScaleAnnotationKey,

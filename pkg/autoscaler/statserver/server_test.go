@@ -29,7 +29,8 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
-	network "knative.dev/networking/pkg"
+	nethttp "knative.dev/networking/pkg/http"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/serving/pkg/autoscaler/metrics"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -76,11 +77,11 @@ func TestProbe(t *testing.T) {
 
 	defer server.Shutdown(0)
 	go server.listenAndServe()
-	req, err := http.NewRequest(http.MethodGet, server.listenAddr()+network.ProbePath, nil)
+	req, err := http.NewRequest(http.MethodGet, server.listenAddr()+nethttp.HealthCheckPath, nil)
 	if err != nil {
 		t.Fatal("Error creating request:", err)
 	}
-	req.Header.Set(network.UserAgentKey, network.KubeProbeUAPrefix+"1.15.i.wish")
+	req.Header.Set(netheader.UserAgentKey, netheader.KubeProbeUAPrefix+"1.15.i.wish")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -213,12 +214,12 @@ func BenchmarkStatServer(b *testing.B) {
 	// the respective number of active revisions, sending via the activator.
 	for _, size := range []int{1, 2, 5, 10, 20, 50, 100} {
 		msgs := make([]metrics.StatMessage, 0, size)
-		for i := 0; i < size; i++ {
+		for range size {
 			msgs = append(msgs, msg1)
 		}
 
 		b.Run(fmt.Sprintf("proto-encoding-%d-msgs", len(msgs)), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				if err := sendProto(statSink, msgs); err != nil {
 					b.Fatal("Expected send to succeed, but got:", err)
 				}
@@ -267,6 +268,7 @@ func dial(serverURL string) (*websocket.Conn, error) {
 	dialer := &websocket.Dialer{
 		HandshakeTimeout: time.Second,
 	}
+	//nolint:bodyclose
 	statSink, _, err := dialer.Dial(u.String(), nil)
 	return statSink, err
 }

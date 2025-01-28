@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -53,14 +54,12 @@ const (
 	DefaultResyncPeriod = 10 * time.Hour
 )
 
-var (
-	// DefaultThreadsPerController is the number of threads to use
-	// when processing the controller's workqueue.  Controller binaries
-	// may adjust this process-wide default.  For finer control, invoke
-	// Run on the controller directly.
-	// TODO rename the const to Concurrency and deprecated this
-	DefaultThreadsPerController = 2
-)
+// DefaultThreadsPerController is the number of threads to use
+// when processing the controller's workqueue.  Controller binaries
+// may adjust this process-wide default.  For finer control, invoke
+// Run on the controller directly.
+// TODO rename the const to Concurrency and deprecated this
+var DefaultThreadsPerController = 2
 
 // Reconciler is the interface that controller implementations are expected
 // to implement, so that the shared controller.Impl can drive work through it.
@@ -225,11 +224,11 @@ type Impl struct {
 
 // ControllerOptions encapsulates options for creating a new controller,
 // including throttling and stats behavior.
-type ControllerOptions struct { //nolint // for backcompat.
+type ControllerOptions struct {
 	WorkQueueName string
 	Logger        *zap.SugaredLogger
 	Reporter      StatsReporter
-	RateLimiter   workqueue.RateLimiter
+	RateLimiter   workqueue.TypedRateLimiter[any]
 	Concurrency   int
 }
 
@@ -237,7 +236,7 @@ type ControllerOptions struct { //nolint // for backcompat.
 // provided Reconciler as it is enqueued.
 func NewContext(ctx context.Context, r Reconciler, options ControllerOptions) *Impl {
 	if options.RateLimiter == nil {
-		options.RateLimiter = workqueue.DefaultControllerRateLimiter()
+		options.RateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
 	}
 	if options.Reporter == nil {
 		options.Reporter = MustNewStatsReporter(options.WorkQueueName, options.Logger)
@@ -264,7 +263,7 @@ func NewContext(ctx context.Context, r Reconciler, options ControllerOptions) *I
 }
 
 // WorkQueue permits direct access to the work queue.
-func (c *Impl) WorkQueue() workqueue.RateLimitingInterface {
+func (c *Impl) WorkQueue() workqueue.TypedRateLimitingInterface[any] {
 	return c.workQueue
 }
 
@@ -440,6 +439,11 @@ func (c *Impl) EnqueueKeyAfter(key types.NamespacedName, delay time.Duration) {
 	}
 }
 
+// Run runs the controller with it's configured Concurrency
+func (c *Impl) Run(ctx context.Context) error {
+	return c.RunContext(ctx, c.Concurrency)
+}
+
 // RunContext starts the controller's worker threads, the number of which is threadiness.
 // If the context has been decorated for LeaderElection, then an elector is built and run.
 // It then blocks until the context is cancelled, at which point it shuts down its
@@ -462,6 +466,13 @@ func (c *Impl) RunContext(ctx context.Context, threadiness int) error {
 		if err != nil {
 			return err
 		}
+		if ib, ok := le.(kle.ElectorWithInitialBuckets); ok {
+			for _, b := range ib.InitialBuckets() {
+				// No need to provide an enq function since the controller
+				// is not processing items
+				la.Promote(b, nil)
+			}
+		}
 		sg.Add(1)
 		go func() {
 			defer sg.Done()
@@ -471,7 +482,7 @@ func (c *Impl) RunContext(ctx context.Context, threadiness int) error {
 
 	// Launch workers to process resources that get enqueued to our workqueue.
 	c.logger.Info("Starting controller and workers")
-	for i := 0; i < threadiness; i++ {
+	for range threadiness {
 		sg.Add(1)
 		go func() {
 			defer sg.Done()
@@ -485,19 +496,6 @@ func (c *Impl) RunContext(ctx context.Context, threadiness int) error {
 	c.logger.Info("Shutting down workers")
 
 	return nil
-}
-
-// Run runs the controller.
-//
-// Deprecated: Use RunContext instead.
-func (c *Impl) Run(threadiness int, stopCh <-chan struct{}) error {
-	// Create a context that is cancelled when the stopCh is called.
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-stopCh
-		cancel()
-	}()
-	return c.RunContext(ctx, threadiness)
 }
 
 // processNextWorkItem will read a single work item off the workqueue and
@@ -625,7 +623,6 @@ func IsSkipKey(err error) bool {
 // Is implements the Is() interface of error. It returns whether the target
 // error can be treated as equivalent to a permanentError.
 func (skipKeyError) Is(target error) bool {
-	//nolint: errorlint // This check is actually fine.
 	_, ok := target.(skipKeyError)
 	return ok
 }
@@ -652,7 +649,6 @@ func IsPermanentError(err error) bool {
 // Is implements the Is() interface of error. It returns whether the target
 // error can be treated as equivalent to a permanentError.
 func (permanentError) Is(target error) bool {
-	//nolint: errorlint // This check is actually fine.
 	_, ok := target.(permanentError)
 	return ok
 }
@@ -712,7 +708,6 @@ func IsRequeueKey(err error) (bool, time.Duration) {
 // Is implements the Is() interface of error. It returns whether the target
 // error can be treated as equivalent to a requeueKeyError.
 func (requeueKeyError) Is(target error) bool {
-	//nolint: errorlint // This check is actually fine.
 	_, ok := target.(requeueKeyError)
 	return ok
 }
@@ -728,7 +723,6 @@ type Informer interface {
 // of them to synchronize.
 func StartInformers(stopCh <-chan struct{}, informers ...Informer) error {
 	for _, informer := range informers {
-		informer := informer
 		go informer.Run(stopCh)
 	}
 
@@ -746,7 +740,6 @@ func RunInformers(stopCh <-chan struct{}, informers ...Informer) (func(), error)
 	var wg sync.WaitGroup
 	wg.Add(len(informers))
 	for _, informer := range informers {
-		informer := informer
 		go func() {
 			defer wg.Done()
 			informer.Run(stopCh)
@@ -764,8 +757,8 @@ func RunInformers(stopCh <-chan struct{}, informers ...Informer) (func(), error)
 // WaitForCacheSyncQuick is the same as cache.WaitForCacheSync but with a much reduced
 // check-rate for the sync period.
 func WaitForCacheSyncQuick(stopCh <-chan struct{}, cacheSyncs ...cache.InformerSynced) bool {
-	err := wait.PollImmediateUntil(time.Millisecond,
-		func() (bool, error) {
+	err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), time.Millisecond, true,
+		func(context.Context) (bool, error) {
 			for _, syncFunc := range cacheSyncs {
 				if !syncFunc() {
 					return false, nil
@@ -773,23 +766,22 @@ func WaitForCacheSyncQuick(stopCh <-chan struct{}, cacheSyncs ...cache.InformerS
 			}
 			return true, nil
 		},
-		stopCh)
+	)
 	return err == nil
 }
 
 // StartAll kicks off all of the passed controllers with DefaultThreadsPerController.
-func StartAll(ctx context.Context, controllers ...*Impl) {
-	wg := sync.WaitGroup{}
+func StartAll(ctx context.Context, controllers ...*Impl) error {
+	eg, egCtx := errgroup.WithContext(ctx)
+
 	// Start all of the controllers.
-	for _, ctrlr := range controllers {
-		wg.Add(1)
-		concurrency := ctrlr.Concurrency
-		go func(c *Impl) {
-			defer wg.Done()
-			c.RunContext(ctx, concurrency)
-		}(ctrlr)
+	for _, controller := range controllers {
+		c := controller
+		eg.Go(func() error {
+			return c.Run(egCtx)
+		})
 	}
-	wg.Wait()
+	return eg.Wait()
 }
 
 // This is attached to contexts passed to controller constructors to associate

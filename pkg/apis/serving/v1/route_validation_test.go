@@ -23,7 +23,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	network "knative.dev/networking/pkg"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	"knative.dev/pkg/apis"
 	"knative.dev/pkg/ptr"
 	"knative.dev/serving/pkg/apis/serving"
@@ -480,28 +480,16 @@ func TestRouteLabelValidation(t *testing.T) {
 		r    *Route
 		want *apis.FieldError
 	}{{
-		name: "valid visibility name",
+		name: "visibility label specified",
 		r: &Route{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "byo-name",
 				Labels: map[string]string{
-					network.VisibilityLabelKey: "cluster-local",
+					netapi.VisibilityLabelKey: "my-visibility",
 				},
 			},
 			Spec: validRouteSpec,
 		},
-	}, {
-		name: "invalid visibility name",
-		r: &Route{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "byo-name",
-				Labels: map[string]string{
-					network.VisibilityLabelKey: "bad-value",
-				},
-			},
-			Spec: validRouteSpec,
-		},
-		want: apis.ErrInvalidValue("bad-value", "metadata.labels."+network.VisibilityLabelKey),
 	}, {
 		name: "valid knative service name",
 		r: &Route{
@@ -653,8 +641,10 @@ func TestRouteAnnotationUpdate(t *testing.T) {
 			},
 			Spec: getRouteSpec("old"),
 		},
-		wantErr: (&apis.FieldError{Message: "annotation value is immutable",
-			Paths: []string{serving.CreatorAnnotation}}).ViaField("metadata.annotations"),
+		wantErr: (&apis.FieldError{
+			Message: "annotation value is immutable",
+			Paths:   []string{serving.CreatorAnnotation},
+		}).ViaField("metadata.annotations"),
 	}, {
 		name: "update creator annotation with spec changes",
 		this: &Route{
@@ -677,8 +667,10 @@ func TestRouteAnnotationUpdate(t *testing.T) {
 			},
 			Spec: getRouteSpec("old"),
 		},
-		wantErr: (&apis.FieldError{Message: "annotation value is immutable",
-			Paths: []string{serving.CreatorAnnotation}}).ViaField("metadata.annotations"),
+		wantErr: (&apis.FieldError{
+			Message: "annotation value is immutable",
+			Paths:   []string{serving.CreatorAnnotation},
+		}).ViaField("metadata.annotations"),
 	}, {
 		name: "update lastModifier annotation without spec changes",
 		this: &Route{

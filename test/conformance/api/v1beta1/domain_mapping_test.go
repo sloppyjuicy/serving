@@ -89,12 +89,12 @@ func TestDomainMapping(t *testing.T) {
 		t.Fatalf("Create(DomainMapping) = %v, expected no error", err)
 	}
 
-	t.Cleanup(func() {
-		clients.ServingAlphaClient.DomainMappings.Delete(ctx, dm.Name, metav1.DeleteOptions{})
+	test.EnsureCleanup(t, func() {
+		clients.ServingBetaClient.DomainMappings.Delete(ctx, dm.Name, metav1.DeleteOptions{})
 	})
 
 	// Wait for DomainMapping to go Ready.
-	waitErr := wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
 		var err error
 		dm, err = clients.ServingBetaClient.DomainMappings.Get(context.Background(), dm.Name, metav1.GetOptions{})
 		if err != nil {
@@ -115,9 +115,10 @@ func TestDomainMapping(t *testing.T) {
 		t.Logf,
 		endpoint,
 		spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(test.PizzaPlanetText1)),
-		"WaitForSuccessfulResponse",
+		"CheckSuccessfulResponse",
 		resolvableCustomDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 		t.Fatalf("Error probing %s: %v", endpoint, err)
 	}
 
@@ -156,13 +157,13 @@ func TestDomainMapping(t *testing.T) {
 		t.Fatalf("Create(DomainMapping) = %v, expected no error", err)
 	}
 
-	t.Cleanup(func() {
-		altClients.ServingAlphaClient.DomainMappings.Delete(ctx, altDm.Name, metav1.DeleteOptions{})
+	test.EnsureCleanup(t, func() {
+		altClients.ServingBetaClient.DomainMappings.Delete(ctx, altDm.Name, metav1.DeleteOptions{})
 	})
 
 	// Second domain mapping should go to DomainMappingConditionDomainClaimed=false state.
-	waitErr = wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
-		state, err := altClients.ServingAlphaClient.DomainMappings.Get(context.Background(), dm.Name, metav1.GetOptions{})
+	waitErr = wait.PollUntilContextTimeout(ctx, test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
+		state, err := altClients.ServingBetaClient.DomainMappings.Get(context.Background(), dm.Name, metav1.GetOptions{})
 		if err != nil {
 			return true, err
 		}
@@ -176,25 +177,26 @@ func TestDomainMapping(t *testing.T) {
 
 	// Because the second DomainMapping collided with the first, it should not have taken effect.
 	t.Log("Probing", endpoint)
-	if _, err := pkgtest.WaitForEndpointState(
+	if _, err := pkgtest.CheckEndpointState(
 		context.Background(),
 		clients.KubeClient,
 		t.Logf,
 		endpoint,
 		spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(test.PizzaPlanetText1)),
-		"WaitForSuccessfulResponse",
+		"CheckSuccessfulResponse",
 		resolvableCustomDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 		t.Fatalf("Error probing %s: %v", endpoint, err)
 	}
 
 	// Delete the first DomainMapping.
-	if err := clients.ServingAlphaClient.DomainMappings.Delete(ctx, dm.Name, metav1.DeleteOptions{}); err != nil {
+	if err := clients.ServingBetaClient.DomainMappings.Delete(ctx, dm.Name, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("Delete=%v, expected no error", err)
 	}
 
 	// The second DomainMapping should now be able to claim the domain.
-	waitErr = wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
+	waitErr = wait.PollUntilContextTimeout(ctx, test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
 		var err error
 		altDm, err = altClients.ServingBetaClient.DomainMappings.Get(context.Background(), altDm.Name, metav1.GetOptions{})
 		if err != nil {
@@ -209,15 +211,16 @@ func TestDomainMapping(t *testing.T) {
 
 	endpoint = altDm.Status.URL.URL()
 	t.Log("Probing", endpoint)
-	if _, err := pkgtest.WaitForEndpointState(
+	if _, err := pkgtest.CheckEndpointState(
 		context.Background(),
 		clients.KubeClient,
 		t.Logf,
 		endpoint,
 		spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(test.PizzaPlanetText2)),
-		"WaitForSuccessfulResponse",
+		"CheckSuccessfulResponse",
 		resolvableCustomDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 		t.Fatalf("Error probing %s: %v", endpoint, err)
 	}
 }

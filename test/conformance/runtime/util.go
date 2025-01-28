@@ -36,8 +36,8 @@ import (
 func fetchRuntimeInfo(
 	t *testing.T,
 	clients *test.Clients,
-	opts ...interface{}) (*test.ResourceNames, *types.RuntimeInfo, error) {
-
+	opts ...interface{},
+) (*test.ResourceNames, *types.RuntimeInfo, error) {
 	names := &test.ResourceNames{Image: test.Runtime}
 	t.Helper()
 	names.Service = test.ObjectNameForTest(t)
@@ -63,7 +63,7 @@ func fetchRuntimeInfo(
 		spoof.IsStatusOK,
 		"RuntimeInfo",
 		test.ServingFlags.ResolvableDomain,
-		append(reqOpts, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))...)
+		append(reqOpts, spoof.WithHeader(test.ServingFlags.RequestHeader()), test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -85,7 +85,6 @@ func splitOpts(opts ...interface{}) ([]v1testing.ServiceOption, []interface{}, e
 		default:
 			return nil, nil, fmt.Errorf("invalid option type: %T", t)
 		}
-
 	}
 	return serviceOpts, reqOpts, nil
 }

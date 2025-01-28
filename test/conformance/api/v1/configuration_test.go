@@ -32,7 +32,8 @@ import (
 )
 
 // TestConfigurationGetAndList tests Getting and Listing Configurations resources.
-//   This test doesn't validate the Data Plane, it is just to check the APIs for conformance
+//
+//	This test doesn't validate the Data Plane, it is just to check the APIs for conformance
 func TestConfigurationGetAndList(t *testing.T) {
 	t.Parallel()
 	clients := test.Setup(t)
@@ -59,7 +60,7 @@ func TestConfigurationGetAndList(t *testing.T) {
 	if len(list.Items) < 1 {
 		t.Fatal("Listing should return at least one Configuration")
 	}
-	var configurationFound = false
+	configurationFound := false
 	for _, configuration := range list.Items {
 		t.Logf("Configuration Returned: %s", configuration.Name)
 		if configuration.Name == config.Name {
@@ -69,7 +70,6 @@ func TestConfigurationGetAndList(t *testing.T) {
 	if !configurationFound {
 		t.Fatal("The Configuration that was previously created was not found by listing all Configurations.")
 	}
-
 }
 
 func TestUpdateConfigurationMetadata(t *testing.T) {

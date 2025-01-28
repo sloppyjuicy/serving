@@ -20,13 +20,16 @@ limitations under the License.
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"knative.dev/serving/test"
+	"knative.dev/serving/test/types"
 
 	. "knative.dev/serving/pkg/testing/v1"
 )
@@ -41,20 +44,26 @@ func toMilliValue(value float64) string {
 	return fmt.Sprintf("%dm", int(value*1000))
 }
 
+func isCgroupsV2(mounts []*types.Mount) (bool, error) {
+	for _, mount := range mounts {
+		if mount.Path == "/sys/fs/cgroup" {
+			return mount.Type == "cgroup2", nil
+		}
+	}
+	return false, errors.New("Failed to find cgroup mount on /sys/fs/cgroup")
+}
+
 // TestMustHaveCgroupConfigured verifies that the Linux cgroups are configured based on the specified
 // resource limits and requests as delared by "MUST" in the runtime-contract.
 func TestMustHaveCgroupConfigured(t *testing.T) {
 	t.Parallel()
 	clients := test.Setup(t)
 
-	resources := corev1.ResourceRequirements{
-		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse(toMilliValue(cpuLimit)),
-			corev1.ResourceMemory: resource.MustParse(strconv.Itoa(memoryLimit) + "Mi"),
-		},
-		Requests: corev1.ResourceList{
-			corev1.ResourceCPU: resource.MustParse(toMilliValue(cpuRequest)),
-		},
+	resources := createResources()
+
+	_, ri, err := fetchRuntimeInfo(t, clients, WithResourceRequirements(resources))
+	if err != nil {
+		t.Fatal("Error fetching runtime info:", err)
 	}
 
 	// Cgroup settings are based on the CPU and Memory Limits as well as CPU Requests
@@ -63,20 +72,34 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 	// It's important to make sure that the memory limit is divisible by common page
 	// size (4k, 8k, 16k, 64k) as some environments apply rounding to the closest page
 	// size multiple, see https://github.com/kubernetes/kubernetes/issues/82230.
-	expectedCgroups := map[string]int{
-		"/sys/fs/cgroup/memory/memory.limit_in_bytes": memoryLimit * 1024 * 1024, // 128 MiB
-		"/sys/fs/cgroup/cpu/cpu.shares":               cpuRequest * 1024}         // CPURequests * 1024
+	expectedCgroupsV1 := map[string]string{
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes": strconv.FormatInt(resources.Limits.Memory().Value()&^4095, 10), // floor() to 4K pages
+		"/sys/fs/cgroup/cpu/cpu.shares":               strconv.FormatInt(resources.Requests.Cpu().MilliValue()*1024/1000, 10),
+	}
 
-	_, ri, err := fetchRuntimeInfo(t, clients, WithResourceRequirements(resources))
-	if err != nil {
-		t.Fatal("Error fetching runtime info:", err)
+	expectedCgroupsV2 := map[string]string{
+		"/sys/fs/cgroup/memory.max": strconv.FormatInt(resources.Limits.Memory().Value()&^4095, 10), // floor() to 4K pages
+		// Convert cgroup v1 cpu.shares value to cgroup v2 cpu.weight
+		// https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2254-cgroup-v2#phase-1-convert-from-cgroups-v1-settings-to-v2
+		"/sys/fs/cgroup/cpu.weight": strconv.FormatInt(((((resources.Requests.Cpu().MilliValue()*1024/1000)-2)*9999)/262142)+1, 10),
 	}
 
 	cgroups := ri.Host.Cgroups
+	cgroupV2, err := isCgroupsV2(ri.Host.Mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// These are used to check the ratio of 'period' to 'quota'. It needs to
-	// be equal to the 'cpuLimit (limit = period / quota)
-	var period, quota *int
+	expectedCgroups := expectedCgroupsV1
+	if cgroupV2 {
+		t.Logf("using cgroupv2")
+		expectedCgroups = expectedCgroupsV2
+	}
+
+	// These are used to check the ratio of 'quota' to 'period'. It needs to
+	// be equal to the 'cpuLimit (limit = quota / period)
+	var period, quota *string
+	var maxV2, periodV2 string
 
 	for _, cgroup := range cgroups {
 		if cgroup.Error != "" {
@@ -84,7 +107,7 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 			continue
 		}
 
-		// These two are special - just save their values and then continue
+		// These are special - just save their values and then continue
 		if cgroup.Name == "/sys/fs/cgroup/cpu/cpu.cfs_period_us" {
 			period = cgroup.Value
 			continue
@@ -93,6 +116,11 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 			quota = cgroup.Value
 			continue
 		}
+		if cgroup.Name == "/sys/fs/cgroup/cpu.max" {
+			// The format is like 'max 100000'.
+			maxV2 = strings.Split(*cgroup.Value, " ")[0]
+			periodV2 = strings.Split(*cgroup.Value, " ")[1]
+		}
 
 		if _, ok := expectedCgroups[cgroup.Name]; !ok {
 			// Service returned a value we don't test
@@ -100,22 +128,49 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 			continue
 		}
 		if got, want := *cgroup.Value, expectedCgroups[cgroup.Name]; got != want {
-			t.Errorf("%s = %d, want: %d", cgroup.Name, *cgroup.Value, expectedCgroups[cgroup.Name])
+			t.Errorf("%s = %s, want: %s", cgroup.Name, *cgroup.Value, expectedCgroups[cgroup.Name])
 		}
 	}
 
-	if period == nil {
-		t.Error("Can't find the 'cpu.cfs_period_us' from cgroups")
-	} else if quota == nil {
-		t.Error("Can't find the 'cpu.cfs_quota_us' from cgroups")
+	expectedCPULimit := int(resources.Limits.Cpu().MilliValue())
+	if cgroupV2 {
+		if maxV2 == "max" {
+			t.Errorf("The cpu is unlimited but should be %d MilliCPUs", expectedCPULimit)
+		}
+		m, err := strconv.Atoi(maxV2)
+		if err != nil {
+			t.Error(err)
+		}
+		p, err := strconv.Atoi(periodV2)
+		if err != nil {
+			t.Error(err)
+		}
+		milliCPU := (1000 * m) / p
+		if milliCPU != expectedCPULimit {
+			t.Errorf("MilliCPU (%v) is wrong should be %v. Max: %v Period: %v", milliCPU, expectedCPULimit, m, p)
+		}
 	} else {
-		percent := (100 * (*period)) / (*quota)
-		if percent != cpuLimit*100 {
-			t.Errorf("Percent (%v) is wrong should be %v. Period: %v Quota: %v",
-				percent, cpuLimit*100, period, quota)
+		if period == nil {
+			t.Error("Can't find the 'cpu.cfs_period_us' from cgroups")
+		} else if quota == nil {
+			t.Error("Can't find the 'cpu.cfs_quota_us' from cgroups")
+		} else {
+			q, err := strconv.Atoi(*quota)
+			if err != nil {
+				t.Error(err)
+			}
+			p, err := strconv.Atoi(*period)
+			if err != nil {
+				t.Error(err)
+			}
+			// CustomCpuLimits of a core e.g. 125m means 12,5% of a single CPU, 2 or 2000m means 200% of a single CPU
+			milliCPU := (1000 * q) / p
+			if milliCPU != expectedCPULimit {
+				t.Errorf("MilliCPU (%v) is wrong should be %v. Period: %v Quota: %v",
+					milliCPU, expectedCPULimit, period, quota)
+			}
 		}
 	}
-
 }
 
 // TestShouldHaveCgroupReadOnly verifies that the Linux cgroups are mounted read-only within the
@@ -139,5 +194,30 @@ func TestShouldHaveCgroupReadOnly(t *testing.T) {
 			t.Errorf("For cgroup %s cgroup.ReadOnly = %v, want: %v", cgroup.Name, *cgroup.ReadOnly, want)
 		}
 	}
+}
 
+func createResources() corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(toMilliValue(cpuLimit)),
+			corev1.ResourceMemory: resource.MustParse(strconv.Itoa(memoryLimit) + "Mi"),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse(toMilliValue(cpuRequest)),
+		},
+	}
+
+	if test.ServingFlags.CustomCPULimits != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(test.ServingFlags.CustomCPULimits)
+	}
+	if test.ServingFlags.CustomMemoryLimits != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(test.ServingFlags.CustomMemoryLimits)
+	}
+	if test.ServingFlags.CustomCPURequests != "" {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse(test.ServingFlags.CustomCPURequests)
+	}
+	if test.ServingFlags.CustomMemoryRequests != "" {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse(test.ServingFlags.CustomMemoryRequests)
+	}
+	return resources
 }

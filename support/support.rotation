@@ -2,26 +2,24 @@
 #
 # Begin metadata
 #@ title: Serving
-#@ slack: #serving-questions
-#@ slacklink: https://knative.slack.com/archives/C0186KU7STW
-
-2021-09-27T01:00:00Z | dprotaso
-2021-10-04T01:00:00Z | carlisia
-2021-10-11T01:00:00Z | markusthoemmes
-2021-10-18T01:00:00Z | julz
-2021-10-25T01:00:00Z | ZhiminXiang
-2021-11-01T01:00:00Z | nak3
-2021-11-08T01:00:00Z | shinigambit
-2021-11-15T01:00:00Z | yanweiguo
-2021-11-22T01:00:00Z | nader-ziada
-2021-11-29T01:00:00Z | carlisia
-2021-12-06T01:00:00Z | dprotaso
-2021-12-13T01:00:00Z | julz
-2021-12-20T01:00:00Z | N/A - break
-2021-12-27T01:00:00Z | N/A - break
-2022-01-03T01:00:00Z | TBD
-2022-01-10T01:00:00Z | nader-ziada
-2022-01-11T01:00:00Z | yanweiguo
-2022-01-17T01:00:00Z | nak3
-2022-01-24T01:00:00Z | shinigambit
-2022-02-07T01:00:00Z | ZhiminXiang
+#@ slack: #knative-serving
+#@ slacklink: https://cloud-native.slack.com/archives/C04LMU0AX60
+#
+2023-02-27T01:00:00Z | dprotaso
+2023-03-06T01:00:00Z | ReToCode
+2023-03-13T01:00:00Z | KauzClay
+2023-03-20T01:00:00Z | skonto
+2023-03-27T01:00:00Z | dprotaso
+2023-04-03T01:00:00Z | KauzClay
+2023-04-10T01:00:00Z | ReToCode
+2023-04-17T01:00:00Z | skonto
+2023-04-24T01:00:00Z | dprotaso
+2023-05-01T01:00:00Z | KauzClay
+2023-05-08T01:00:00Z | ReToCode
+2023-05-15T01:00:00Z | skonto
+2023-05-22T01:00:00Z | dprotaso
+2023-05-29T01:00:00Z | KauzClay
+2023-06-05T01:00:00Z | ReToCode
+2023-06-12T01:00:00Z | skonto
+2023-06-19T01:00:00Z | dprotaso
+2023-06-26T01:00:00Z | KauzClay

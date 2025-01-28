@@ -29,16 +29,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/ptr"
 	pkgtest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 )
 
 // TestServiceCreateListAndDelete tests Creation, Listing and Deletion for Service resources.
-//   This test doesn't validate the Data Plane, it is just to check the Control Plane resources and their APIs
+//
+//	This test doesn't validate the Data Plane, it is just to check the Control Plane resources and their APIs
 func TestServiceCreateListAndDelete(t *testing.T) {
 	t.Parallel()
 	clients := test.Setup(t)
@@ -68,7 +71,7 @@ func TestServiceCreateListAndDelete(t *testing.T) {
 	if len(list.Items) < 1 {
 		t.Fatal("Listing should return at least one Service")
 	}
-	var serviceFound = false
+	serviceFound := false
 	for _, service := range list.Items {
 		t.Logf("Service Returned: %s", service.Name)
 		if service.Name == names.Service {
@@ -82,16 +85,15 @@ func TestServiceCreateListAndDelete(t *testing.T) {
 	if err := v1test.DeleteService(clients, names.Service); err != nil {
 		t.Fatal("Error deleting Service")
 	}
-
 }
 
 // TestServiceCreateAndUpdate tests both Creation and Update paths for a service. The test performs a series of Update/Validate steps to ensure that
 // the service transitions as expected during each step.
 // Currently the test performs the following updates:
-// 1. Update Container Image
-// 2. Update Metadata
-//    a. Update Labels
-//    b. Update Annotations
+//  1. Update Container Image
+//  2. Update Metadata
+//     a. Update Labels
+//     b. Update Annotations
 func TestServiceCreateAndUpdate(t *testing.T) {
 	t.Parallel()
 	clients := test.Setup(t)
@@ -129,7 +131,11 @@ func TestServiceCreateAndUpdate(t *testing.T) {
 	}
 
 	// We start a background prober to test if Route is always healthy even during Route update.
-	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
+	prober := test.RunRouteProber(
+		t.Logf,
+		clients, names.URL,
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader()))
 	defer test.AssertProberDefault(t, prober)
 
 	// Update Container Image
@@ -286,7 +292,12 @@ func TestServiceBYOName(t *testing.T) {
 	}
 
 	// We start a background prober to test if Route is always healthy even during Route update.
-	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
+	prober := test.RunRouteProber(
+		t.Logf,
+		clients,
+		names.URL,
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader()))
 	defer test.AssertProberDefault(t, prober)
 
 	// Update Container Image
@@ -708,9 +719,19 @@ func TestServiceCreateWithMultipleContainers(t *testing.T) {
 		Ports: []corev1.ContainerPort{{
 			ContainerPort: 8881,
 		}},
+		Env: []corev1.EnvVar{
+			{Name: "FORWARD_PORT", Value: "8882"},
+		},
 	}, {
 		Image: pkgtest.ImagePath(names.Sidecars[0]),
 	}}
+
+	// Please see the comment in test/v1/configuration.go.
+	if !test.ServingFlags.DisableOptionalAPI {
+		for _, c := range containers {
+			c.ImagePullPolicy = corev1.PullIfNotPresent
+		}
+	}
 
 	// Setup initial Service
 	if _, err := v1test.CreateServiceReady(t, clients, &names, func(svc *v1.Service) {
@@ -725,6 +746,51 @@ func TestServiceCreateWithMultipleContainers(t *testing.T) {
 	}
 
 	if err := validateDataPlane(t, clients, names, test.MultiContainerResponse); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestServiceCreateWithEmptyDir tests both Creation paths for a service with emptydir enabled.
+// The test performs a series of Validate steps to ensure that the service transitions as expected during each step.
+func TestServiceCreateWithEmptyDir(t *testing.T) {
+	if test.ServingFlags.DisableOptionalAPI {
+		t.Skip("Emptydir support is not required by Knative Serving API Specification")
+	}
+	if !test.ServingFlags.EnableBetaFeatures {
+		t.Skip()
+	}
+	t.Parallel()
+	clients := test.Setup(t)
+
+	names := test.ResourceNames{
+		Service: test.ObjectNameForTest(t),
+		Image:   test.Volumes,
+	}
+
+	quantity := resource.MustParse("100M")
+
+	withVolume := rtesting.WithVolume("data", "/data", corev1.VolumeSource{
+		EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium:    "Memory",
+			SizeLimit: &quantity,
+		},
+	})
+
+	// Clean up on test failure or interrupt
+	test.EnsureTearDown(t, clients, &names)
+
+	// Setup initial Service
+	_, err := v1test.CreateServiceReady(t, clients, &names, withVolume)
+	if err != nil {
+		t.Fatalf("Failed to create initial Service: %v: %v", names.Service, err)
+	}
+
+	// Validate State after Creation
+	if err := validateControlPlane(t, clients, names, "1" /*1 is the expected generation value*/); err != nil {
+		t.Error(err)
+	}
+
+	if err := validateDataPlane(t, clients, names, test.EmptyDirText); err != nil {
 		t.Error(err)
 	}
 }

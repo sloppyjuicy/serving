@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// EvictionApplyConfiguration represents an declarative configuration of the Eviction type for use
+// EvictionApplyConfiguration represents a declarative configuration of the Eviction type for use
 // with apply.
 type EvictionApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -35,7 +35,7 @@ type EvictionApplyConfiguration struct {
 	DeleteOptions                    *v1.DeleteOptionsApplyConfiguration `json:"deleteOptions,omitempty"`
 }
 
-// Eviction constructs an declarative configuration of the Eviction type for use with
+// Eviction constructs a declarative configuration of the Eviction type for use with
 // apply.
 func Eviction(name, namespace string) *EvictionApplyConfiguration {
 	b := &EvictionApplyConfiguration{}
@@ -49,7 +49,7 @@ func Eviction(name, namespace string) *EvictionApplyConfiguration {
 // ExtractEviction extracts the applied configuration owned by fieldManager from
 // eviction. If no managedFields are found in eviction for fieldManager, a
 // EvictionApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // eviction must be a unmodified Eviction API object that was retrieved from the Kubernetes API.
@@ -58,8 +58,19 @@ func Eviction(name, namespace string) *EvictionApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractEviction(eviction *v1beta1.Eviction, fieldManager string) (*EvictionApplyConfiguration, error) {
+	return extractEviction(eviction, fieldManager, "")
+}
+
+// ExtractEvictionStatus is the same as ExtractEviction except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractEvictionStatus(eviction *v1beta1.Eviction, fieldManager string) (*EvictionApplyConfiguration, error) {
+	return extractEviction(eviction, fieldManager, "status")
+}
+
+func extractEviction(eviction *v1beta1.Eviction, fieldManager string, subresource string) (*EvictionApplyConfiguration, error) {
 	b := &EvictionApplyConfiguration{}
-	err := managedfields.ExtractInto(eviction, internal.Parser().Type("io.k8s.api.policy.v1beta1.Eviction"), fieldManager, b)
+	err := managedfields.ExtractInto(eviction, internal.Parser().Type("io.k8s.api.policy.v1beta1.Eviction"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -111,15 +122,6 @@ func (b *EvictionApplyConfiguration) WithGenerateName(value string) *EvictionApp
 func (b *EvictionApplyConfiguration) WithNamespace(value string) *EvictionApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *EvictionApplyConfiguration) WithSelfLink(value string) *EvictionApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -232,15 +234,6 @@ func (b *EvictionApplyConfiguration) WithFinalizers(values ...string) *EvictionA
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *EvictionApplyConfiguration) WithClusterName(value string) *EvictionApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *EvictionApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -253,4 +246,10 @@ func (b *EvictionApplyConfiguration) ensureObjectMetaApplyConfigurationExists() 
 func (b *EvictionApplyConfiguration) WithDeleteOptions(value *v1.DeleteOptionsApplyConfiguration) *EvictionApplyConfiguration {
 	b.DeleteOptions = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *EvictionApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http/httputil"
 	"sync"
 	"time"
@@ -135,7 +134,7 @@ func NewDurableConnection(target string, messageChan chan []byte, logger *zap.Su
 			// by restarting the serving side of the connection behind a Kubernetes Service.
 			HandshakeTimeout: 3 * time.Second,
 		}
-		conn, resp, err := dialer.Dial(target, nil)
+		conn, resp, err := dialer.Dial(target, nil) //nolint:bodyclose
 		if err != nil {
 			if resp != nil {
 				dresp, _ := httputil.DumpResponse(resp, true /*body*/) // This is for logging so don't care if it fails.
@@ -302,7 +301,7 @@ func (c *ManagedConnection) read() error {
 	// and if that channel is set.
 	// TODO(markusthoemmes): Return the messageType along with the payload.
 	if c.messageChan != nil && (messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
-		if message, _ := ioutil.ReadAll(reader); message != nil {
+		if message, _ := io.ReadAll(reader); message != nil {
 			c.messageChan <- message
 		}
 	}

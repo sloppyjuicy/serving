@@ -23,7 +23,6 @@ import (
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
@@ -36,9 +35,9 @@ type FakeServerlessServices struct {
 	ns   string
 }
 
-var serverlessservicesResource = schema.GroupVersionResource{Group: "networking.internal.knative.dev", Version: "v1alpha1", Resource: "serverlessservices"}
+var serverlessservicesResource = v1alpha1.SchemeGroupVersion.WithResource("serverlessservices")
 
-var serverlessservicesKind = schema.GroupVersionKind{Group: "networking.internal.knative.dev", Version: "v1alpha1", Kind: "ServerlessService"}
+var serverlessservicesKind = v1alpha1.SchemeGroupVersion.WithKind("ServerlessService")
 
 // Get takes name of the serverlessService, and returns the corresponding serverlessService object, and an error if there is any.
 func (c *FakeServerlessServices) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.ServerlessService, err error) {
@@ -117,7 +116,7 @@ func (c *FakeServerlessServices) UpdateStatus(ctx context.Context, serverlessSer
 // Delete takes name of the serverlessService and deletes it. Returns an error if one occurs.
 func (c *FakeServerlessServices) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewDeleteAction(serverlessservicesResource, c.ns, name), &v1alpha1.ServerlessService{})
+		Invokes(testing.NewDeleteActionWithOptions(serverlessservicesResource, c.ns, name, opts), &v1alpha1.ServerlessService{})
 
 	return err
 }

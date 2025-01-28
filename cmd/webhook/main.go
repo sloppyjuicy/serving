@@ -33,6 +33,8 @@ import (
 	"knative.dev/pkg/webhook/resourcesemantics"
 	"knative.dev/pkg/webhook/resourcesemantics/defaulting"
 	"knative.dev/pkg/webhook/resourcesemantics/validation"
+	servingv1beta1 "knative.dev/serving/pkg/apis/serving/v1beta1"
+	certconfig "knative.dev/serving/pkg/reconciler/certificate/config"
 
 	// resource validation types
 	net "knative.dev/networking/pkg/apis/networking/v1alpha1"
@@ -42,6 +44,7 @@ import (
 
 	// config validation constructors
 	network "knative.dev/networking/pkg"
+	netcfg "knative.dev/networking/pkg/config"
 	tracingconfig "knative.dev/pkg/tracing/config"
 	apisconfig "knative.dev/serving/pkg/apis/config"
 	autoscalerconfig "knative.dev/serving/pkg/autoscaler/config"
@@ -62,6 +65,8 @@ var types = map[schema.GroupVersionKind]resourcesemantics.GenericCRD{
 	net.SchemeGroupVersion.WithKind("Certificate"):       &net.Certificate{},
 	net.SchemeGroupVersion.WithKind("Ingress"):           &net.Ingress{},
 	net.SchemeGroupVersion.WithKind("ServerlessService"): &net.ServerlessService{},
+
+	servingv1beta1.SchemeGroupVersion.WithKind("DomainMapping"): &servingv1beta1.DomainMapping{},
 }
 
 var serviceValidation = validation.NewCallback(
@@ -94,8 +99,9 @@ func newDefaultingAdmissionController(ctx context.Context, cmw configmap.Watcher
 		// A function that infuses the context passed to Validate/SetDefaults with custom metadata.
 		store.ToContext,
 
-		// Whether to disallow unknown fields.
-		true,
+		// Whether to disallow unknown fields. We set this to 'false' since
+		// our CRDs have schemas
+		false,
 	)
 }
 
@@ -118,8 +124,9 @@ func newValidationAdmissionController(ctx context.Context, cmw configmap.Watcher
 		// A function that infuses the context passed to Validate/SetDefaults with custom metadata.
 		store.ToContext,
 
-		// Whether to disallow unknown fields.
-		true,
+		// Whether to disallow unknown fields. We set this to 'false' since
+		// our CRDs have schemas
+		false,
 
 		// Extra validating callbacks to be applied to resources.
 		callbacks,
@@ -137,17 +144,18 @@ func newConfigValidationController(ctx context.Context, cmw configmap.Watcher) *
 
 		// The configmaps to validate.
 		configmap.Constructors{
-			tracingconfig.ConfigName:       tracingconfig.NewTracingConfigFromConfigMap,
-			autoscalerconfig.ConfigName:    autoscalerconfig.NewConfigFromConfigMap,
-			gc.ConfigName:                  gc.NewConfigFromConfigMapFunc(ctx),
-			network.ConfigName:             network.NewConfigFromConfigMap,
-			deployment.ConfigName:          deployment.NewConfigFromConfigMap,
-			apisconfig.FeaturesConfigName:  apisconfig.NewFeaturesConfigFromConfigMap,
-			metrics.ConfigMapName():        metrics.NewObservabilityConfigFromConfigMap,
-			logging.ConfigMapName():        logging.NewConfigFromConfigMap,
-			leaderelection.ConfigMapName(): leaderelection.NewConfigFromConfigMap,
-			domainconfig.DomainConfigName:  domainconfig.NewDomainFromConfigMap,
-			apisconfig.DefaultsConfigName:  apisconfig.NewDefaultsConfigFromConfigMap,
+			tracingconfig.ConfigName:         tracingconfig.NewTracingConfigFromConfigMap,
+			autoscalerconfig.ConfigName:      autoscalerconfig.NewConfigFromConfigMap,
+			gc.ConfigName:                    gc.NewConfigFromConfigMapFunc(ctx),
+			netcfg.ConfigMapName:             network.NewConfigFromConfigMap,
+			deployment.ConfigName:            deployment.NewConfigFromConfigMap,
+			apisconfig.FeaturesConfigName:    apisconfig.NewFeaturesConfigFromConfigMap,
+			metrics.ConfigMapName():          metrics.NewObservabilityConfigFromConfigMap,
+			logging.ConfigMapName():          logging.NewConfigFromConfigMap,
+			leaderelection.ConfigMapName():   leaderelection.NewConfigFromConfigMap,
+			domainconfig.DomainConfigName:    domainconfig.NewDomainFromConfigMap,
+			apisconfig.DefaultsConfigName:    apisconfig.NewDefaultsConfigFromConfigMap,
+			certconfig.CertManagerConfigName: certconfig.NewCertManagerConfigFromConfigMap,
 		},
 	)
 }
@@ -160,6 +168,7 @@ func main() {
 		SecretName:  "webhook-certs",
 	})
 
+	ctx = sharedmain.WithHealthProbesDisabled(ctx)
 	sharedmain.WebhookMainWithContext(ctx, "webhook",
 		certificates.NewController,
 		newDefaultingAdmissionController,

@@ -28,7 +28,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// CSIStorageCapacityApplyConfiguration represents an declarative configuration of the CSIStorageCapacity type for use
+// CSIStorageCapacityApplyConfiguration represents a declarative configuration of the CSIStorageCapacity type for use
 // with apply.
 type CSIStorageCapacityApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -39,7 +39,7 @@ type CSIStorageCapacityApplyConfiguration struct {
 	MaximumVolumeSize                *resource.Quantity                  `json:"maximumVolumeSize,omitempty"`
 }
 
-// CSIStorageCapacity constructs an declarative configuration of the CSIStorageCapacity type for use with
+// CSIStorageCapacity constructs a declarative configuration of the CSIStorageCapacity type for use with
 // apply.
 func CSIStorageCapacity(name, namespace string) *CSIStorageCapacityApplyConfiguration {
 	b := &CSIStorageCapacityApplyConfiguration{}
@@ -53,7 +53,7 @@ func CSIStorageCapacity(name, namespace string) *CSIStorageCapacityApplyConfigur
 // ExtractCSIStorageCapacity extracts the applied configuration owned by fieldManager from
 // cSIStorageCapacity. If no managedFields are found in cSIStorageCapacity for fieldManager, a
 // CSIStorageCapacityApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // cSIStorageCapacity must be a unmodified CSIStorageCapacity API object that was retrieved from the Kubernetes API.
@@ -62,8 +62,19 @@ func CSIStorageCapacity(name, namespace string) *CSIStorageCapacityApplyConfigur
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractCSIStorageCapacity(cSIStorageCapacity *v1beta1.CSIStorageCapacity, fieldManager string) (*CSIStorageCapacityApplyConfiguration, error) {
+	return extractCSIStorageCapacity(cSIStorageCapacity, fieldManager, "")
+}
+
+// ExtractCSIStorageCapacityStatus is the same as ExtractCSIStorageCapacity except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractCSIStorageCapacityStatus(cSIStorageCapacity *v1beta1.CSIStorageCapacity, fieldManager string) (*CSIStorageCapacityApplyConfiguration, error) {
+	return extractCSIStorageCapacity(cSIStorageCapacity, fieldManager, "status")
+}
+
+func extractCSIStorageCapacity(cSIStorageCapacity *v1beta1.CSIStorageCapacity, fieldManager string, subresource string) (*CSIStorageCapacityApplyConfiguration, error) {
 	b := &CSIStorageCapacityApplyConfiguration{}
-	err := managedfields.ExtractInto(cSIStorageCapacity, internal.Parser().Type("io.k8s.api.storage.v1beta1.CSIStorageCapacity"), fieldManager, b)
+	err := managedfields.ExtractInto(cSIStorageCapacity, internal.Parser().Type("io.k8s.api.storage.v1beta1.CSIStorageCapacity"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -115,15 +126,6 @@ func (b *CSIStorageCapacityApplyConfiguration) WithGenerateName(value string) *C
 func (b *CSIStorageCapacityApplyConfiguration) WithNamespace(value string) *CSIStorageCapacityApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *CSIStorageCapacityApplyConfiguration) WithSelfLink(value string) *CSIStorageCapacityApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -236,15 +238,6 @@ func (b *CSIStorageCapacityApplyConfiguration) WithFinalizers(values ...string) 
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *CSIStorageCapacityApplyConfiguration) WithClusterName(value string) *CSIStorageCapacityApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *CSIStorageCapacityApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -281,4 +274,10 @@ func (b *CSIStorageCapacityApplyConfiguration) WithCapacity(value resource.Quant
 func (b *CSIStorageCapacityApplyConfiguration) WithMaximumVolumeSize(value resource.Quantity) *CSIStorageCapacityApplyConfiguration {
 	b.MaximumVolumeSize = &value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *CSIStorageCapacityApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

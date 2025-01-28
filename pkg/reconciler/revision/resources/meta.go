@@ -17,6 +17,8 @@ limitations under the License.
 package resources
 
 import (
+	"maps"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"knative.dev/pkg/kmeta"
@@ -25,17 +27,21 @@ import (
 )
 
 var (
-	excludeLabels = sets.NewString(
+	excludeLabels = sets.New(
 		serving.RouteLabelKey,
 		serving.RoutingStateLabelKey,
 	)
 
-	excludeAnnotations = sets.NewString(
+	excludeAnnotations = sets.New(
 		serving.RevisionLastPinnedAnnotationKey,
 		serving.RevisionPreservedAnnotationKey,
 		serving.RoutingStateModifiedAnnotationKey,
 		serving.RoutesAnnotationKey,
 	)
+)
+
+const (
+	DefaultContainerAnnotationName = "kubectl.kubernetes.io/default-container"
 )
 
 // makeLabels constructs the labels we will apply to K8s resources.
@@ -57,6 +63,17 @@ func makeLabels(revision *v1.Revision) map[string]string {
 
 func makeAnnotations(revision *v1.Revision) map[string]string {
 	return kmeta.FilterMap(revision.GetAnnotations(), excludeAnnotations.Has)
+}
+
+func makeAnnotationsForPod(revision *v1.Revision, baseAnnotations map[string]string) map[string]string {
+	podAnnotations := maps.Clone(baseAnnotations)
+
+	// Add default container annotation to the pod meta
+	if userContainer := revision.Spec.GetContainer(); userContainer.Name != "" {
+		podAnnotations[DefaultContainerAnnotationName] = userContainer.Name
+	}
+
+	return podAnnotations
 }
 
 // makeSelector constructs the Selector we will apply to K8s resources.

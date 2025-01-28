@@ -36,7 +36,6 @@ import (
 const (
 	// Test image names
 	Autoscale           = "autoscale"
-	EmptyDir            = "emptydir"
 	Failing             = "failing"
 	GRPCPing            = "grpc-ping"
 	HelloHTTP2          = "hellohttp2"
@@ -46,14 +45,14 @@ const (
 	InvalidHelloWorld   = "invalidhelloworld" // Not a real image
 	PizzaPlanet1        = "pizzaplanetv1"
 	PizzaPlanet2        = "pizzaplanetv2"
-	Protocols           = "protocols"
 	Readiness           = "readiness"
 	Runtime             = "runtime"
 	ServingContainer    = "servingcontainer"
 	SidecarContainer    = "sidecarcontainer"
 	SingleThreadedImage = "singlethreaded"
 	Timeout             = "timeout"
-	WorkingDir          = "workingdir"
+	Volumes             = "volumes"
+	SlowStart           = "slowstart"
 
 	// Constants for test image output.
 	PizzaPlanetText1 = "What a spaceport!"
@@ -74,12 +73,27 @@ const (
 	MinSplitPercentage = 0.25
 )
 
+type Options struct {
+	Namespace        string
+	DisableLogStream bool
+}
+
 // Setup creates client to run Knative Service requests
-func Setup(t testing.TB, namespace ...string) *Clients {
+func Setup(t testing.TB, opts ...Options) *Clients {
+	var o Options
+	switch len(opts) {
+	case 1:
+		o = opts[0]
+	case 0:
+		o = Options{}
+	default:
+		t.Fatalf("multiple Options supplied to Setup")
+	}
+
 	t.Helper()
 	logging.InitializeLogger()
 
-	if !ServingFlags.DisableLogStream {
+	if !ServingFlags.DisableLogStream && !o.DisableLogStream {
 		cancel := logstream.Start(t)
 		t.Cleanup(cancel)
 	}
@@ -90,8 +104,8 @@ func Setup(t testing.TB, namespace ...string) *Clients {
 	}
 
 	ns := ServingFlags.TestNamespace
-	if len(namespace) > 0 {
-		ns = namespace[0]
+	if len(o.Namespace) > 0 {
+		ns = o.Namespace
 	}
 
 	clients, err := NewClients(cfg, ns)

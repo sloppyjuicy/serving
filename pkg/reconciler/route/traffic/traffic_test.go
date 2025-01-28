@@ -29,8 +29,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	network "knative.dev/networking/pkg"
 	net "knative.dev/networking/pkg/apis/networking"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/ptr"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
@@ -69,6 +69,10 @@ var (
 	failedConfig *v1.Configuration
 	failedRev    *v1.Revision
 
+	// failedReadyConfig was ready and then failed
+	failedReadyConfig *v1.Configuration
+	failedReadyRev    *v1.Revision
+
 	// inactiveConfig only has inactiveRevision, and it's not active.
 	inactiveConfig *v1.Configuration
 	inactiveRev    *v1.Revision
@@ -89,7 +93,7 @@ var (
 	// fake lister to return API error.
 	revErrorLister listers.RevisionLister
 
-	cmpOpts = []cmp.Option{cmp.AllowUnexported(Config{})}
+	cmpOpts = []cmp.Option{cmp.AllowUnexported(Config{}, unreadyRevisionError{})}
 )
 
 func setUp() {
@@ -98,6 +102,7 @@ func setUp() {
 	unreadyConfig, unreadyRev = getTestUnreadyConfig("unready")
 	readyUnreadyConfig, readyRevision, newUnreadyRev = createReadyUnreadyConfig("ready-unready")
 	failedConfig, failedRev = getTestFailedConfig("failed")
+	failedReadyConfig, failedReadyRev = getTestFailedReadyConfig("failed-ready")
 	inactiveConfig, inactiveRev = getTestInactiveConfig("inactive")
 	goodConfig, goodOldRev, goodNewRev = getTestReadyConfig("good")
 	niceConfig, niceOldRev, niceNewRev = getTestReadyConfig("nice")
@@ -115,6 +120,7 @@ func setUp() {
 	objs := []runtime.Object{
 		unreadyConfig, unreadyRev,
 		failedConfig, failedRev,
+		failedReadyConfig, failedReadyRev,
 		inactiveConfig, inactiveRev,
 		revDeletedConfig,
 		emptyConfig,
@@ -595,6 +601,7 @@ func TestBuildTrafficConfigThreeConfigs(t *testing.T) {
 		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
+
 func TestBuildTrafficConfigurationTwoEntriesSameConfigDifferentTags(t *testing.T) {
 	expected := &Config{
 		Targets: map[string]RevisionTargets{
@@ -1157,6 +1164,22 @@ func TestBuildTrafficConfigurationNotRoutableRevision(t *testing.T) {
 	}
 }
 
+func TestBuildTraffic_LatestReadyRevisionFailed(t *testing.T) {
+	_, got := BuildTrafficConfiguration(
+		configLister, revLister,
+		testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+			ConfigurationName: failedReadyConfig.Name,
+			LatestRevision:    ptr.Bool(true),
+			Percent:           ptr.Int64(100),
+		},
+		)))
+
+	want := errUnreadyRevision(failedReadyRev)
+	if !cmp.Equal(want, got, cmpOpts...) {
+		t.Errorf("Expected %v, saw %v", want, got)
+	}
+}
+
 func TestBuildTrafficConfigurationReadyNotReadyConfig(t *testing.T) {
 	expected := &Config{
 		Targets: map[string]RevisionTargets{
@@ -1342,7 +1365,8 @@ func (l revFakeErrorLister) Revisions(namespace string) listers.RevisionNamespac
 func TestBuildTrafficConfigurationFailedGetRevision(t *testing.T) {
 	_, err := BuildTrafficConfiguration(configLister, revErrorLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
 		RevisionName: goodNewRev.Name,
-		Percent:      ptr.Int64(50)})))
+		Percent:      ptr.Int64(50),
+	})))
 	if err != nil && err.Error() != errAPI.Error() {
 		t.Errorf("err: %v, want: %v", err.Error(), errAPI.Error())
 	} else if err == nil {
@@ -1543,12 +1567,25 @@ func getTestFailedConfig(name string) (*v1.Configuration, *v1.Revision) {
 	return config, rev
 }
 
+func getTestFailedReadyConfig(name string) (*v1.Configuration, *v1.Revision) {
+	config := testConfig(name + "-config")
+	rev := testRevForConfig(config, name+"-revision")
+	config.Status.SetLatestCreatedRevisionName(rev.Name)
+	config.Status.SetLatestReadyRevisionName(rev.Name)
+	config.Status.MarkLatestCreatedFailed(rev.Name, "Permanently failed")
+
+	rev.Status.MarkContainerHealthyFalse(v1.ReasonContainerMissing, "Should have used ko")
+	return config, rev
+}
+
 func getTestInactiveConfig(name string) (*v1.Configuration, *v1.Revision) {
 	config := testConfig(name + "-config")
 	rev := testRevForConfig(config, name+"-revision")
 	config.Status.SetLatestReadyRevisionName(rev.Name)
 	config.Status.SetLatestCreatedRevisionName(rev.Name)
 	rev.Status.InitializeConditions()
+	rev.Status.MarkContainerHealthyTrue()
+	rev.Status.MarkResourcesAvailableTrue()
 	rev.Status.MarkActiveFalse("Reserve", "blah blah blah")
 	return config, rev
 }
@@ -1687,17 +1724,17 @@ func getContext() context.Context {
 func testNetworkConfig() *config.Config {
 	return &config.Config{
 		Domain: &config.Domain{
-			Domains: map[string]*config.LabelSelector{
+			Domains: map[string]config.DomainConfig{
 				"example.com": {},
 				"another-example.com": {
-					Selector: map[string]string{"app": "prod"},
+					Selector: &config.LabelSelector{Selector: map[string]string{"app": "prod"}},
 				},
 			},
 		},
-		Network: &network.Config{
+		Network: &netcfg.Config{
 			DefaultIngressClass:   "test-ingress-class",
-			DomainTemplate:        network.DefaultDomainTemplate,
-			TagTemplate:           network.DefaultTagTemplate,
+			DomainTemplate:        netcfg.DefaultDomainTemplate,
+			TagTemplate:           netcfg.DefaultTagTemplate,
 			DefaultExternalScheme: "http",
 		},
 	}

@@ -18,24 +18,24 @@ package net
 
 import (
 	"context"
-	"math"
-	"math/rand"
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
-	network "knative.dev/networking/pkg"
 	pkgnet "knative.dev/networking/pkg/apis/networking"
+	netcfg "knative.dev/networking/pkg/config"
 	endpointsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints"
 	"knative.dev/pkg/controller"
+	"knative.dev/pkg/kmeta"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 	"knative.dev/pkg/reconciler"
@@ -90,6 +90,9 @@ func (p *podTracker) getWeight() int32 {
 }
 
 func (p *podTracker) String() string {
+	if p == nil {
+		return "<nil>"
+	}
 	return p.dest
 }
 
@@ -168,7 +171,8 @@ type revisionThrottler struct {
 func newRevisionThrottler(revID types.NamespacedName,
 	containerConcurrency int, proto string,
 	breakerParams queue.BreakerParams,
-	logger *zap.SugaredLogger) *revisionThrottler {
+	logger *zap.SugaredLogger,
+) *revisionThrottler {
 	logger = logger.With(zap.String(logkey.Key, revID.String()))
 	var (
 		revBreaker breaker
@@ -187,15 +191,18 @@ func newRevisionThrottler(revID types.NamespacedName,
 		revBreaker = queue.NewBreaker(breakerParams)
 		lbp = newRoundRobinPolicy()
 	}
-	return &revisionThrottler{
+	t := &revisionThrottler{
 		revID:                revID,
 		containerConcurrency: containerConcurrency,
 		breaker:              revBreaker,
 		logger:               logger,
 		protocol:             proto,
-		activatorIndex:       *atomic.NewInt32(-1), // Start with unknown.
 		lbPolicy:             lbp,
 	}
+
+	// Start with unknown
+	t.activatorIndex.Store(-1)
+	return t
 }
 
 func noop() {}
@@ -239,18 +246,30 @@ func (rt *revisionThrottler) try(ctx context.Context, function func(string) erro
 	return ret
 }
 
-func (rt *revisionThrottler) calculateCapacity(size, activatorCount int) int {
-	targetCapacity := rt.containerConcurrency * size
+func (rt *revisionThrottler) calculateCapacity(backendCount, numTrackers, activatorCount int) int {
+	var targetCapacity int
+	if numTrackers > 0 {
+		// Capacity is computed based off of number of trackers,
+		// when using pod direct routing.
+		// We use number of assignedTrackers (numTrackers) for calculation
+		// since assignedTrackers means activator's capacity
+		targetCapacity = rt.containerConcurrency * numTrackers
+	} else {
+		// Capacity is computed off of number of ready backends,
+		// when we are using clusterIP routing.
+		targetCapacity = rt.containerConcurrency * backendCount
+		if targetCapacity > 0 {
+			targetCapacity = minOneOrValue(targetCapacity / minOneOrValue(activatorCount))
+		}
+	}
 
-	if size > 0 && (rt.containerConcurrency == 0 || targetCapacity > revisionMaxConcurrency) {
+	if (backendCount > 0) && (rt.containerConcurrency == 0 || targetCapacity > revisionMaxConcurrency) {
 		// If cc==0, we need to pick a number, but it does not matter, since
 		// infinite breaker will dole out as many tokens as it can.
 		// For cc>0 we clamp targetCapacity to maxConcurrency because the backing
 		// breaker requires some limit (it's backed by a chan struct{}), but the
 		// limit is math.MaxInt32 so in practice this should never be a real limit.
 		targetCapacity = revisionMaxConcurrency
-	} else if targetCapacity > 0 {
-		targetCapacity = minOneOrValue(targetCapacity / minOneOrValue(activatorCount))
 	}
 
 	return targetCapacity
@@ -294,7 +313,7 @@ func (rt *revisionThrottler) updateCapacity(backendCount int) {
 		assigned := rt.podTrackers
 		if rt.containerConcurrency > 0 {
 			rt.resetTrackers()
-			assigned = assignSlice(rt.podTrackers, ai, ac, rt.containerConcurrency)
+			assigned = assignSlice(rt.podTrackers, ai, ac)
 		}
 		rt.logger.Debugf("Trackers %d/%d: assignment: %v", ai, ac, assigned)
 		// The actual write out of the assigned trackers has to be under lock.
@@ -304,16 +323,7 @@ func (rt *revisionThrottler) updateCapacity(backendCount int) {
 		return len(assigned)
 	}()
 
-	capacity := 0
-	if numTrackers > 0 {
-		// Capacity is computed based off of number of trackers,
-		// when using pod direct routing.
-		capacity = rt.calculateCapacity(len(rt.podTrackers), ac)
-	} else {
-		// Capacity is computed off of number of ready backends,
-		// when we are using clusterIP routing.
-		capacity = rt.calculateCapacity(backendCount, ac)
-	}
+	capacity := rt.calculateCapacity(backendCount, numTrackers, ac)
 	rt.logger.Infof("Set capacity to %d (backends: %d, index: %d/%d)",
 		capacity, backendCount, ai, ac)
 
@@ -369,7 +379,7 @@ func pickIndices(numTrackers, selfIndex, numActivators int) (beginIndex, endInde
 // for this Activator instance. This only matters in case of direct
 // to pod IP routing, and is irrelevant, when ClusterIP is used.
 // assignSlice should receive podTrackers sorted by address.
-func assignSlice(trackers []*podTracker, selfIndex, numActivators, cc int) []*podTracker {
+func assignSlice(trackers []*podTracker, selfIndex, numActivators int) []*podTracker {
 	// When we're unassigned, doesn't matter what we return.
 	lt := len(trackers)
 	if selfIndex == -1 || lt <= 1 {
@@ -381,22 +391,16 @@ func assignSlice(trackers []*podTracker, selfIndex, numActivators, cc int) []*po
 		return trackers
 	}
 
+	// If the number of pods is not divisible by the number of activators, we allocate one pod to each activator exclusively.
+	// examples
+	// 1. we have 20 pods and 3 activators -> we'd get 2 remnants so activator with index 0,1 would each pick up a unique tracker
+	// 2. we have 24 pods and 5 activators -> we'd get 4 remnants so the activator 0,1,2,3 would each pick up a unique tracker
 	bi, ei, remnants := pickIndices(lt, selfIndex, numActivators)
 	x := append(trackers[:0:0], trackers[bi:ei]...)
 	if remnants > 0 {
 		tail := trackers[len(trackers)-remnants:]
-		// We shuffle the tail, to ensure that pods in the tail get better
-		// load distribution, since we sort the pods above, this puts more requests
-		// on the very first tail pod, than on the others.
-		rand.Shuffle(remnants, func(i, j int) {
-			tail[i], tail[j] = tail[j], tail[i]
-		})
-		// assignSlice is not called for CC=0 case.
-		dcc := int(math.Ceil(float64(cc) / float64(numActivators)))
-		// This is basically: x = append(x, trackers[len(trackers)-remnants:]...)
-		// But we need to update the capacity.
-		for _, t := range tail {
-			t.UpdateConcurrency(dcc)
+		if len(tail) > selfIndex {
+			t := tail[selfIndex]
 			x = append(x, t)
 		}
 	}
@@ -492,7 +496,7 @@ func NewThrottler(ctx context.Context, ipAddr string) *Throttler {
 }
 
 // Run starts the throttler and blocks until the context is done.
-func (t *Throttler) Run(ctx context.Context, probeTransport http.RoundTripper, usePassthroughLb bool, meshMode network.MeshCompatibilityMode) {
+func (t *Throttler) Run(ctx context.Context, probeTransport http.RoundTripper, usePassthroughLb bool, meshMode netcfg.MeshCompatibilityMode) {
 	rbm := newRevisionBackendsManager(ctx, probeTransport, usePassthroughLb, meshMode)
 	// Update channel is closed when ctx is done.
 	t.run(rbm.updates())
@@ -570,8 +574,13 @@ func (t *Throttler) revisionUpdated(obj interface{}) {
 // revisionDeleted is to clean up revision throttlers after a revision is deleted to prevent unbounded
 // memory growth
 func (t *Throttler) revisionDeleted(obj interface{}) {
-	rev := obj.(*v1.Revision)
-	revID := types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}
+	acc, err := kmeta.DeletionHandlingAccessor(obj)
+	if err != nil {
+		t.logger.Warnw("Revision delete failure to process", zap.Error(err))
+		return
+	}
+
+	revID := types.NamespacedName{Namespace: acc.GetNamespace(), Name: acc.GetName()}
 
 	t.logger.Debugw("Revision delete", zap.String(logkey.Key, revID.String()))
 
@@ -622,7 +631,8 @@ func (rt *revisionThrottler) handlePubEpsUpdate(eps *corev1.Endpoints, selfIP st
 	}
 
 	// We are using List to have the IP addresses sorted for consistent results.
-	epsL := epSet.List()
+	epsL := sets.List(epSet)
+	//nolint:gosec // number of k8s replicas is bounded by int32
 	newNA, newAI := int32(len(epsL)), int32(inferIndex(epsL, selfIP))
 	if newAI == -1 {
 		// No need to do anything, this activator is not in path.

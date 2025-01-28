@@ -1,5 +1,5 @@
 /*
-Copyright 2021 The Knative Authors
+Copyright 2022 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -67,10 +67,15 @@ func NewImpl(ctx context.Context, r Interface, classValue string, optionsFns ...
 	lister := podautoscalerInformer.Lister()
 
 	var promoteFilterFunc func(obj interface{}) bool
+	var promoteFunc = func(bkt reconciler.Bucket) {}
 
 	rec := &reconcilerImpl{
 		LeaderAwareFuncs: reconciler.LeaderAwareFuncs{
 			PromoteFunc: func(bkt reconciler.Bucket, enq func(reconciler.Bucket, types.NamespacedName)) error {
+
+				// Signal promotion event
+				promoteFunc(bkt)
+
 				all, err := lister.List(labels.Everything())
 				if err != nil {
 					return err
@@ -128,6 +133,9 @@ func NewImpl(ctx context.Context, r Interface, classValue string, optionsFns ...
 		}
 		if opts.PromoteFilterFunc != nil {
 			promoteFilterFunc = opts.PromoteFilterFunc
+		}
+		if opts.PromoteFunc != nil {
+			promoteFunc = opts.PromoteFunc
 		}
 	}
 

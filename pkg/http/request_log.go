@@ -23,11 +23,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
-	"go.uber.org/atomic"
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 // RequestLogHandler implements an http.Handler that writes request logs
@@ -85,7 +85,8 @@ func RequestLogTemplateInputGetterFromRevision(rev *RequestLogRevision) RequestL
 
 // NewRequestLogHandler creates an http.Handler that logs request logs to an io.Writer.
 func NewRequestLogHandler(h http.Handler, w io.Writer, templateStr string,
-	inputGetter RequestLogTemplateInputGetter, enableProbeRequestLog bool) (*RequestLogHandler, error) {
+	inputGetter RequestLogTemplateInputGetter, enableProbeRequestLog bool,
+) (*RequestLogHandler, error) {
 	reqHandler := &RequestLogHandler{
 		handler:               h,
 		writer:                w,
@@ -137,7 +138,7 @@ func (h *RequestLogHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		// Filter probe requests for request logs if disabled.
-		if !h.enableProbeRequestLog && network.IsProbe(r) {
+		if !h.enableProbeRequestLog && netheader.IsProbe(r) {
 			return
 		}
 
@@ -151,13 +152,12 @@ func (h *RequestLogHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Size:    0,
 			}))
 			panic(err)
-		} else {
-			h.write(t, h.inputGetter(r, &RequestLogResponse{
-				Code:    rr.ResponseCode,
-				Latency: latency,
-				Size:    rr.ResponseSize,
-			}))
 		}
+		h.write(t, h.inputGetter(r, &RequestLogResponse{
+			Code:    rr.ResponseCode,
+			Latency: latency,
+			Size:    rr.ResponseSize,
+		}))
 	}()
 
 	h.handler.ServeHTTP(rr, r)

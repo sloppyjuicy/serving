@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// RoleBindingApplyConfiguration represents an declarative configuration of the RoleBinding type for use
+// RoleBindingApplyConfiguration represents a declarative configuration of the RoleBinding type for use
 // with apply.
 type RoleBindingApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -36,7 +36,7 @@ type RoleBindingApplyConfiguration struct {
 	RoleRef                          *RoleRefApplyConfiguration  `json:"roleRef,omitempty"`
 }
 
-// RoleBinding constructs an declarative configuration of the RoleBinding type for use with
+// RoleBinding constructs a declarative configuration of the RoleBinding type for use with
 // apply.
 func RoleBinding(name, namespace string) *RoleBindingApplyConfiguration {
 	b := &RoleBindingApplyConfiguration{}
@@ -50,7 +50,7 @@ func RoleBinding(name, namespace string) *RoleBindingApplyConfiguration {
 // ExtractRoleBinding extracts the applied configuration owned by fieldManager from
 // roleBinding. If no managedFields are found in roleBinding for fieldManager, a
 // RoleBindingApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // roleBinding must be a unmodified RoleBinding API object that was retrieved from the Kubernetes API.
@@ -59,8 +59,19 @@ func RoleBinding(name, namespace string) *RoleBindingApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractRoleBinding(roleBinding *rbacv1alpha1.RoleBinding, fieldManager string) (*RoleBindingApplyConfiguration, error) {
+	return extractRoleBinding(roleBinding, fieldManager, "")
+}
+
+// ExtractRoleBindingStatus is the same as ExtractRoleBinding except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractRoleBindingStatus(roleBinding *rbacv1alpha1.RoleBinding, fieldManager string) (*RoleBindingApplyConfiguration, error) {
+	return extractRoleBinding(roleBinding, fieldManager, "status")
+}
+
+func extractRoleBinding(roleBinding *rbacv1alpha1.RoleBinding, fieldManager string, subresource string) (*RoleBindingApplyConfiguration, error) {
 	b := &RoleBindingApplyConfiguration{}
-	err := managedfields.ExtractInto(roleBinding, internal.Parser().Type("io.k8s.api.rbac.v1alpha1.RoleBinding"), fieldManager, b)
+	err := managedfields.ExtractInto(roleBinding, internal.Parser().Type("io.k8s.api.rbac.v1alpha1.RoleBinding"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -112,15 +123,6 @@ func (b *RoleBindingApplyConfiguration) WithGenerateName(value string) *RoleBind
 func (b *RoleBindingApplyConfiguration) WithNamespace(value string) *RoleBindingApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *RoleBindingApplyConfiguration) WithSelfLink(value string) *RoleBindingApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -233,15 +235,6 @@ func (b *RoleBindingApplyConfiguration) WithFinalizers(values ...string) *RoleBi
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *RoleBindingApplyConfiguration) WithClusterName(value string) *RoleBindingApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *RoleBindingApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -267,4 +260,10 @@ func (b *RoleBindingApplyConfiguration) WithSubjects(values ...*SubjectApplyConf
 func (b *RoleBindingApplyConfiguration) WithRoleRef(value *RoleRefApplyConfiguration) *RoleBindingApplyConfiguration {
 	b.RoleRef = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *RoleBindingApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

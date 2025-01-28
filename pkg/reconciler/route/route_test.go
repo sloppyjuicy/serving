@@ -25,33 +25,37 @@ import (
 
 	// Inject the informers this controller depends on.
 	fakenetworkingclient "knative.dev/networking/pkg/client/injection/client/fake"
+	fakecertificateinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate/fake"
 	fakeingressinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/ingress/fake"
+	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
+	fakeserviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service/fake"
 	fakeservingclient "knative.dev/serving/pkg/client/injection/client/fake"
 	fakecfginformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/configuration/fake"
 	fakerevisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision/fake"
 	fakerouteinformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/route/fake"
 
-	_ "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate/fake"
 	_ "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints/fake"
-	_ "knative.dev/pkg/client/injection/kube/informers/core/v1/service/fake"
 
 	"github.com/google/go-cmp/cmp"
 	"golang.org/x/sync/errgroup"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/clock"
 
-	network "knative.dev/networking/pkg"
 	"knative.dev/networking/pkg/apis/networking"
 	"knative.dev/networking/pkg/apis/networking/v1alpha1"
+	netcfg "knative.dev/networking/pkg/config"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
+	logtesting "knative.dev/pkg/logging/testing"
 	pkgnet "knative.dev/pkg/network"
 	"knative.dev/pkg/ptr"
 	"knative.dev/pkg/reconciler"
@@ -95,8 +99,8 @@ func newTestSetup(t *testing.T, opts ...reconcilerOption) (
 	informers []controller.Informer,
 	ctrl *controller.Impl,
 	configMapWatcher *configmap.ManualWatcher,
-	cf context.CancelFunc) {
-
+	cf context.CancelFunc,
+) {
 	ctx, cf, informers = SetupFakeContextWithCancel(t)
 	configMapWatcher = &configmap.ManualWatcher{Namespace: system.Namespace()}
 	ctrl = newController(ctx, configMapWatcher, &clock.RealClock{}, opts...)
@@ -112,7 +116,7 @@ func newTestSetup(t *testing.T, opts ...reconcilerOption) (
 		},
 	}, {
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      network.ConfigName,
+			Name:      netcfg.ConfigMapName,
 			Namespace: system.Namespace(),
 		},
 	}, {
@@ -199,7 +203,7 @@ func TestCreateRouteForOneReserveRevision(t *testing.T) {
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 
@@ -268,7 +272,7 @@ func TestCreateRouteForOneReserveRevision(t *testing.T) {
 	}
 
 	fakeingressinformer.Get(ctx).Informer().GetIndexer().Update(ci)
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	// Look for the events. Events are delivered asynchronously so we need to use
 	// hooks here. Each hook tests for a specific event.
@@ -332,7 +336,7 @@ func TestCreateRouteWithMultipleTargets(t *testing.T) {
 	// Since Reconcile looks in the lister, we need to add it to the informer.
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
@@ -450,7 +454,7 @@ func TestCreateRouteWithOneTargetReserve(t *testing.T) {
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
@@ -582,7 +586,7 @@ func TestCreateRouteWithDuplicateTargets(t *testing.T) {
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
@@ -788,7 +792,7 @@ func TestCreateRouteWithNamedTargets(t *testing.T) {
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
@@ -997,7 +1001,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 	fakeservingclient.Get(ctx).ServingV1().Routes(testNamespace).Create(ctx, route, metav1.CreateOptions{})
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
-	ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route))
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
 
 	ci := getRouteIngressFromClient(ctx, t, route)
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
@@ -1013,7 +1017,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 			HTTP: &v1alpha1.HTTPIngressRuleValue{
 				Paths: []v1alpha1.HTTPIngressPath{{
 					Headers: map[string]v1alpha1.HeaderMatch{
-						network.TagHeaderName: {
+						netheader.RouteTagKey: {
 							Exact: "bar",
 						},
 					},
@@ -1033,7 +1037,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 					},
 				}, {
 					Headers: map[string]v1alpha1.HeaderMatch{
-						network.TagHeaderName: {
+						netheader.RouteTagKey: {
 							Exact: "foo",
 						},
 					},
@@ -1053,7 +1057,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 					},
 				}, {
 					AppendHeaders: map[string]string{
-						network.DefaultRouteHeaderName: "true",
+						netheader.DefaultRouteKey: "true",
 					},
 					Splits: []v1alpha1.IngressBackendSplit{{
 						IngressBackend: v1alpha1.IngressBackend{
@@ -1086,7 +1090,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 			HTTP: &v1alpha1.HTTPIngressRuleValue{
 				Paths: []v1alpha1.HTTPIngressPath{{
 					Headers: map[string]v1alpha1.HeaderMatch{
-						network.TagHeaderName: {
+						netheader.RouteTagKey: {
 							Exact: "bar",
 						},
 					},
@@ -1106,7 +1110,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 					},
 				}, {
 					Headers: map[string]v1alpha1.HeaderMatch{
-						network.TagHeaderName: {
+						netheader.RouteTagKey: {
 							Exact: "foo",
 						},
 					},
@@ -1126,7 +1130,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 					},
 				}, {
 					AppendHeaders: map[string]string{
-						network.DefaultRouteHeaderName: "true",
+						netheader.DefaultRouteKey: "true",
 					},
 					Splits: []v1alpha1.IngressBackendSplit{{
 						IngressBackend: v1alpha1.IngressBackend{
@@ -1175,7 +1179,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 						},
 					}},
 					AppendHeaders: map[string]string{
-						network.TagHeaderName: "bar",
+						netheader.RouteTagKey: "bar",
 					},
 				}},
 			},
@@ -1199,7 +1203,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 						},
 					}},
 					AppendHeaders: map[string]string{
-						network.TagHeaderName: "bar",
+						netheader.RouteTagKey: "bar",
 					},
 				}},
 			},
@@ -1225,7 +1229,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 						},
 					}},
 					AppendHeaders: map[string]string{
-						network.TagHeaderName: "foo",
+						netheader.RouteTagKey: "foo",
 					},
 				}},
 			},
@@ -1247,7 +1251,7 @@ func TestCreateRouteWithNamedTargetsAndTagBasedRouting(t *testing.T) {
 						},
 					}},
 					AppendHeaders: map[string]string{
-						network.TagHeaderName: "foo",
+						netheader.RouteTagKey: "foo",
 					},
 				}},
 			},
@@ -1325,14 +1329,14 @@ func TestUpdateDomainConfigMap(t *testing.T) {
 			// Create a route.
 			fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
 			routeClient.Create(ctx, route, metav1.CreateOptions{})
-			if err := ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route)); err != nil {
+			if err := ctl.Reconciler.Reconcile(ctx, KeyOrDie(route)); err != nil {
 				t.Fatal("Reconcile() =", err)
 			}
 			addRouteToInformers(ctx, t, route)
 
 			// Wait initial reconcile to finish.
 			rl := fakerouteinformer.Get(ctx).Lister().Routes(route.Namespace)
-			if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 				r, err := rl.Get(route.Name)
 				if err != nil {
 					return false, err
@@ -1366,7 +1370,7 @@ func TestUpdateDomainConfigMap(t *testing.T) {
 				}
 
 				// Ensure we have the proper version in the informers.
-				if err := wait.PollImmediate(10*time.Millisecond, 3*time.Second, func() (bool, error) {
+				if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 3*time.Second, true, func(context.Context) (bool, error) {
 					r, err := rl.Get(route.Name)
 					return r != nil && r.Generation == route.Generation, err
 				}); err != nil {
@@ -1375,12 +1379,12 @@ func TestUpdateDomainConfigMap(t *testing.T) {
 
 				// Now that we know the exact version the reconciler is going to see in the
 				// informers, let's reconcile.
-				if err := ctl.Reconciler.Reconcile(context.Background(), KeyOrDie(route)); err != nil {
+				if err := ctl.Reconciler.Reconcile(ctx, KeyOrDie(route)); err != nil {
 					t.Fatal("Reconcile() =", err)
 				}
 
 				var gotDomain string
-				if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+				if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 					r, err := routeClient.Get(ctx, route.Name, metav1.GetOptions{})
 					if err != nil {
 						return false, err
@@ -1458,7 +1462,6 @@ func TestGlobalResyncOnUpdateDomainConfigMap(t *testing.T) {
 	}}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.expectedDomainSuffix, func(t *testing.T) {
 			ctx, informers, ctrl, watcher, cf := newTestSetup(t)
 
@@ -1489,16 +1492,17 @@ func TestGlobalResyncOnUpdateDomainConfigMap(t *testing.T) {
 			route := Route(testNamespace, "test-route",
 				WithRouteLabel(map[string]string{"app": "prod"}), WithRouteGeneration(1))
 
-			created, err := servingClient.ServingV1().Routes(route.Namespace).Create(ctx, route, metav1.CreateOptions{})
+			_, err = servingClient.ServingV1().Routes(route.Namespace).Create(ctx, route, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatal("Failed to create route", err)
 			}
-			routeInformer.Informer().GetIndexer().Add(created)
 
 			rl := routeInformer.Lister()
-			if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 				r, err := rl.Routes(route.Namespace).Get(route.Name)
-				if err != nil {
+				if err != nil && errors.IsNotFound(err) {
+					return false, nil
+				} else if err != nil {
 					return false, err
 				}
 				// Once we see an observed generation, we know the route got initially reconciled.
@@ -1510,7 +1514,7 @@ func TestGlobalResyncOnUpdateDomainConfigMap(t *testing.T) {
 			test.doThings(watcher)
 
 			expectedDomain := fmt.Sprintf("%s.%s.%s", route.Name, route.Namespace, test.expectedDomainSuffix)
-			if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 				r, err := rl.Routes(route.Namespace).Get(route.Name)
 				if err != nil {
 					return false, err
@@ -1584,40 +1588,40 @@ func TestRouteDomain(t *testing.T) {
 	}
 }
 
-func TestAutoTLSEnabled(t *testing.T) {
+func TestExternalDomainTLSEnabled(t *testing.T) {
 	tests := []struct {
-		name                  string
-		configAutoTLSEnabled  bool
-		tlsDisabledAnnotation string
-		wantAutoTLSEnabled    bool
+		name                           string
+		configExternalDomainTLSEnabled bool
+		tlsDisabledAnnotation          string
+		wantExternalDomainTLSEnabled   bool
 	}{{
-		name:                 "AutoTLS enabled by config, not disabled by annotation",
-		configAutoTLSEnabled: true,
-		wantAutoTLSEnabled:   true,
+		name:                           "ExternalDomainTLS enabled by config, not disabled by annotation",
+		configExternalDomainTLSEnabled: true,
+		wantExternalDomainTLSEnabled:   true,
 	}, {
-		name:                  "AutoTLS enabled by config, disabled by annotation",
-		configAutoTLSEnabled:  true,
-		tlsDisabledAnnotation: "true",
-		wantAutoTLSEnabled:    false,
+		name:                           "ExternalDomainTLS enabled by config, disabled by annotation",
+		configExternalDomainTLSEnabled: true,
+		tlsDisabledAnnotation:          "true",
+		wantExternalDomainTLSEnabled:   false,
 	}, {
-		name:                 "AutoTLS disabled by config, not disabled by annotation",
-		configAutoTLSEnabled: false,
-		wantAutoTLSEnabled:   false,
+		name:                           "ExternalDomainTLS disabled by config, not disabled by annotation",
+		configExternalDomainTLSEnabled: false,
+		wantExternalDomainTLSEnabled:   false,
 	}, {
-		name:                  "AutoTLS disabled by config, disabled by annotation",
-		configAutoTLSEnabled:  false,
-		tlsDisabledAnnotation: "true",
-		wantAutoTLSEnabled:    false,
+		name:                           "ExternalDomainTLS disabled by config, disabled by annotation",
+		configExternalDomainTLSEnabled: false,
+		tlsDisabledAnnotation:          "true",
+		wantExternalDomainTLSEnabled:   false,
 	}, {
-		name:                  "AutoTLS enabled by config, invalid annotation",
-		configAutoTLSEnabled:  true,
-		tlsDisabledAnnotation: "foo",
-		wantAutoTLSEnabled:    true,
+		name:                           "ExternalDomainTLS enabled by config, invalid annotation",
+		configExternalDomainTLSEnabled: true,
+		tlsDisabledAnnotation:          "foo",
+		wantExternalDomainTLSEnabled:   true,
 	}, {
-		name:                  "AutoTLS disabled by config, invalid annotation",
-		configAutoTLSEnabled:  false,
-		tlsDisabledAnnotation: "foo",
-		wantAutoTLSEnabled:    false,
+		name:                           "ExternalDomainTLS disabled by config, invalid annotation",
+		configExternalDomainTLSEnabled: false,
+		tlsDisabledAnnotation:          "foo",
+		wantExternalDomainTLSEnabled:   false,
 	}}
 
 	r := Route("test-ns", "test-route")
@@ -1625,17 +1629,163 @@ func TestAutoTLSEnabled(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := config.ToContext(context.Background(), &config.Config{
-				Network: &network.Config{
-					AutoTLS: test.configAutoTLSEnabled,
+			ctx := logtesting.TestContextWithLogger(t)
+			ctx = config.ToContext(ctx, &config.Config{
+				Network: &netcfg.Config{
+					ExternalDomainTLS: test.configExternalDomainTLSEnabled,
 				},
 			})
 
-			r.Annotations[networking.DisableAutoTLSAnnotationKey] = test.tlsDisabledAnnotation
+			r.Annotations[networking.DisableExternalDomainTLSAnnotationKey] = test.tlsDisabledAnnotation
 
-			if got := autoTLSEnabled(ctx, r); got != test.wantAutoTLSEnabled {
-				t.Errorf("autoTLSEnabled = %t, want %t", got, test.wantAutoTLSEnabled)
+			if got := externalDomainTLSEnabled(ctx, r); got != test.wantExternalDomainTLSEnabled {
+				t.Errorf("externalDomainTLSEnabled = %t, want %t", got, test.wantExternalDomainTLSEnabled)
 			}
 		})
+	}
+}
+
+func TestCreateRouteWithClusterLocalDomainTLSEnabled(t *testing.T) {
+	ctx, _, ctl, watcher, cf := newTestSetup(t)
+	defer cf()
+
+	// Enable cluster-local-domain-tls
+	watcher.OnChange(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      netcfg.ConfigMapName,
+			Namespace: system.Namespace(),
+		},
+		Data: map[string]string{
+			"cluster-local-domain-tls": "enabled",
+		},
+	})
+
+	fakeRecorder := controller.GetEventRecorder(ctx).(*record.FakeRecorder)
+
+	rev := Revision(testNamespace, "test-rev", MarkRevisionReady)
+	fakeservingclient.Get(ctx).ServingV1().Revisions(testNamespace).Create(ctx, rev, metav1.CreateOptions{})
+	fakerevisioninformer.Get(ctx).Informer().GetIndexer().Add(rev)
+
+	// A route targeting the revision
+	route := Route(testNamespace, "test-route", WithSpecTraffic(v1.TrafficTarget{
+		RevisionName:      "test-rev",
+		ConfigurationName: "test-config",
+		Percent:           ptr.Int64(100),
+	}), WithRouteLabel(map[string]string{"route": "test-route"}))
+	fakeservingclient.Get(ctx).ServingV1().Routes(testNamespace).Create(ctx, route, metav1.CreateOptions{})
+	// Since Reconcile looks in the lister, we need to add it to the informer
+	fakerouteinformer.Get(ctx).Informer().GetIndexer().Add(route)
+
+	// reconcile once to get certificate object
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
+
+	// mark the certificate as ready
+	cert, _ := fakenetworkingclient.Get(ctx).NetworkingV1alpha1().Certificates(testNamespace).Get(ctx, "route--local", metav1.GetOptions{})
+	cert.Status.MarkReady()
+	fakenetworkingclient.Get(ctx).NetworkingV1alpha1().Certificates(testNamespace).Update(ctx, cert, metav1.UpdateOptions{})
+	fakecertificateinformer.Get(ctx).Informer().GetIndexer().Add(cert)
+
+	// Since Reconcile looks in the lister, we need to add the created objects to the informers to avoid "already exists" errors
+	svc, _ := fakekubeclient.Get(ctx).CoreV1().Services(testNamespace).List(ctx, metav1.ListOptions{})
+	for _, s := range svc.Items {
+		fakeserviceinformer.Get(ctx).Informer().GetIndexer().Add(&s)
+	}
+	ing, _ := fakenetworkingclient.Get(ctx).NetworkingV1alpha1().Ingresses(testNamespace).List(ctx, metav1.ListOptions{})
+	for _, i := range ing.Items {
+		fakeingressinformer.Get(ctx).Informer().GetIndexer().Add(&i)
+	}
+
+	// reconcile again as now certificate is ready
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
+
+	ci := getRouteIngressFromClient(ctx, t, route)
+
+	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
+	hosts := []string{"test-route.test", "test-route.test.svc", pkgnet.GetServiceHostname("test-route", "test")}
+
+	expectedSpec := v1alpha1.IngressSpec{
+		HTTPOption: v1alpha1.HTTPOptionEnabled,
+		TLS: []v1alpha1.IngressTLS{{
+			Hosts:           hosts,
+			SecretName:      "route--local",
+			SecretNamespace: testNamespace,
+		}},
+		Rules: []v1alpha1.IngressRule{{
+			Hosts:      hosts,
+			Visibility: v1alpha1.IngressVisibilityClusterLocal,
+			HTTP: &v1alpha1.HTTPIngressRuleValue{
+				Paths: []v1alpha1.HTTPIngressPath{{
+					Splits: []v1alpha1.IngressBackendSplit{{
+						IngressBackend: v1alpha1.IngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      rev.Name,
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+						AppendHeaders: map[string]string{
+							"Knative-Serving-Revision":  "test-rev",
+							"Knative-Serving-Namespace": testNamespace,
+						},
+					}},
+				}},
+			},
+		}, {
+			Hosts: []string{
+				domain,
+			},
+			Visibility: v1alpha1.IngressVisibilityExternalIP,
+			HTTP: &v1alpha1.HTTPIngressRuleValue{
+				Paths: []v1alpha1.HTTPIngressPath{{
+					Splits: []v1alpha1.IngressBackendSplit{{
+						IngressBackend: v1alpha1.IngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      rev.Name,
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+						AppendHeaders: map[string]string{
+							"Knative-Serving-Revision":  "test-rev",
+							"Knative-Serving-Namespace": testNamespace,
+						},
+					}},
+				}},
+			},
+		}},
+	}
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
+		t.Error("Unexpected rule spec diff (-want +got):", diff)
+	}
+
+	fakeingressinformer.Get(ctx).Informer().GetIndexer().Update(ci)
+	ctl.Reconciler.Reconcile(ctx, KeyOrDie(route))
+
+	// Look for the events. Events are delivered asynchronously so we need to use
+	// hooks here. Each hook tests for a specific event.
+	select {
+	case got := <-fakeRecorder.Events:
+		const want = `Normal Created Created placeholder service "test-route"`
+		if got != want {
+			t.Errorf("<-Events = %s wanted %s", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Timed out waiting for expected events.")
+	}
+	select {
+	case got := <-fakeRecorder.Events:
+		const wantPrefix = `Normal Created Created Certificate test/route--local`
+		if !strings.HasPrefix(got, wantPrefix) {
+			t.Errorf("<-Events = %s wanted prefix %s", got, wantPrefix)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Timed out waiting for expected events.")
+	}
+	select {
+	case got := <-fakeRecorder.Events:
+		const wantPrefix = `Normal Created Created Ingress "test-route"`
+		if !strings.HasPrefix(got, wantPrefix) {
+			t.Errorf("<-Events = %s wanted prefix %s", got, wantPrefix)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("Timed out waiting for expected events.")
 	}
 }

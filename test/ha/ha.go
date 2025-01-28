@@ -26,8 +26,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 
+	netcfg "knative.dev/networking/pkg/config"
+	"knative.dev/pkg/system"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/pkg/test/spoof"
+	"knative.dev/serving/pkg/networking"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
 	"knative.dev/serving/test/e2e"
@@ -37,7 +40,7 @@ import (
 const (
 	// NumControllerReconcilers is the number of controllers run by ./cmd/controller/main.go.
 	// It is exported so the tests from cmd/controller/main.go can ensure we keep it in sync.
-	NumControllerReconcilers = 8
+	NumControllerReconcilers = 9
 )
 
 func createPizzaPlanetService(t *testing.T, fopt ...rtesting.ServiceOption) (test.ResourceNames, *v1test.ResourceObjects) {
@@ -80,7 +83,7 @@ func assertServiceEventuallyWorks(t *testing.T, clients *test.Clients, names tes
 func waitForEndpointsState(client kubernetes.Interface, svcName, svcNamespace string, inState func(*corev1.Endpoints) (bool, error)) error {
 	endpointsService := client.CoreV1().Endpoints(svcNamespace)
 
-	return wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
 		endpoint, err := endpointsService.Get(context.Background(), svcName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -101,4 +104,18 @@ func readyEndpointsDoNotContain(ip string) func(*corev1.Endpoints) (bool, error)
 		}
 		return true, nil
 	}
+}
+
+func isNetCertmanagerControllerReconcilerOn(t *testing.T, client kubernetes.Interface) bool {
+	var cm *corev1.ConfigMap
+	var err error
+	if cm, err = client.CoreV1().ConfigMaps(system.Namespace()).Get(context.Background(), "config-network", metav1.GetOptions{}); err != nil {
+		t.Fatalf("Failed to get cm config-network: %v", err)
+	}
+	netCfg, err := netcfg.NewConfigFromMap(cm.Data)
+	if err != nil {
+		t.Fatalf("Failed to construct network config: %v", err)
+	}
+
+	return networking.IsNetCertManagerControllerRequired(netCfg)
 }

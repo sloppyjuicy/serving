@@ -117,6 +117,12 @@ func (rs *RouteStatus) MarkUnknownTrafficError(msg string) {
 	routeCondSet.Manage(rs).MarkUnknown(RouteConditionAllTrafficAssigned, "Unknown", msg)
 }
 
+// MarkRevisionTargetTrafficError marks the RouteConditionAllTrafficAssigned condition
+// to indicate an error has occurred wrt a revision target.
+func (rs *RouteStatus) MarkRevisionTargetTrafficError(reason, msg string) {
+	routeCondSet.Manage(rs).MarkFalse(RouteConditionAllTrafficAssigned, reason, msg)
+}
+
 // MarkConfigurationNotReady marks the RouteConditionAllTrafficAssigned
 // condition to indiciate the Revision is not yet ready.
 func (rs *RouteStatus) MarkConfigurationNotReady(name string) {
@@ -160,10 +166,11 @@ func (rs *RouteStatus) MarkMissingTrafficTarget(kind, name string) {
 // MarkCertificateProvisionFailed marks the
 // RouteConditionCertificateProvisioned condition to indicate that the
 // Certificate provisioning failed.
-func (rs *RouteStatus) MarkCertificateProvisionFailed(name string) {
+func (rs *RouteStatus) MarkCertificateProvisionFailed(c *v1alpha1.Certificate) {
+	certificateCondition := c.Status.GetCondition(apis.ConditionReady)
 	routeCondSet.Manage(rs).MarkFalse(RouteConditionCertificateProvisioned,
 		"CertificateProvisionFailed",
-		"Certificate %s fails to be provisioned.", name)
+		"Certificate %s fails to be provisioned: %s", c.Name, certificateCondition.GetReason())
 }
 
 // MarkCertificateReady marks the RouteConditionCertificateProvisioned
@@ -174,10 +181,11 @@ func (rs *RouteStatus) MarkCertificateReady(name string) {
 
 // MarkCertificateNotReady marks the RouteConditionCertificateProvisioned
 // condition to indicate that the Certificate is not ready.
-func (rs *RouteStatus) MarkCertificateNotReady(name string) {
+func (rs *RouteStatus) MarkCertificateNotReady(c *v1alpha1.Certificate) {
+	certificateCondition := c.Status.GetCondition("Ready")
 	routeCondSet.Manage(rs).MarkUnknown(RouteConditionCertificateProvisioned,
 		"CertificateNotReady",
-		"Certificate %s is not ready.", name)
+		"Certificate %s is not ready: %s", c.Name, certificateCondition.GetReason())
 }
 
 // MarkCertificateNotOwned changes the RouteConditionCertificateProvisioned
@@ -190,10 +198,10 @@ func (rs *RouteStatus) MarkCertificateNotOwned(name string) {
 }
 
 const (
-	// AutoTLSNotEnabledMessage is the message which is set on the
+	// ExternalDomainTLSNotEnabledMessage is the message which is set on the
 	// RouteConditionCertificateProvisioned condition when it is set to True
-	// because AutoTLS was not enabled.
-	AutoTLSNotEnabledMessage = "autoTLS is not enabled"
+	// because external-domain-tls was not enabled.
+	ExternalDomainTLSNotEnabledMessage = "external-domain-tls is not enabled"
 
 	// TLSNotEnabledForClusterLocalMessage is the message which is set on the
 	// RouteConditionCertificateProvisioned condition when it is set to True
@@ -202,7 +210,7 @@ const (
 )
 
 // MarkTLSNotEnabled sets RouteConditionCertificateProvisioned to true when
-// certificate config such as autoTLS is not enabled or private cluster-local service.
+// certificate config such as external-domain-tls is not enabled or private cluster-local service.
 func (rs *RouteStatus) MarkTLSNotEnabled(msg string) {
 	routeCondSet.Manage(rs).MarkTrueWithReason(RouteConditionCertificateProvisioned,
 		"TLSNotEnabled", msg)

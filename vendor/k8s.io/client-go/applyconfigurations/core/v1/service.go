@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// ServiceApplyConfiguration represents an declarative configuration of the Service type for use
+// ServiceApplyConfiguration represents a declarative configuration of the Service type for use
 // with apply.
 type ServiceApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -36,7 +36,7 @@ type ServiceApplyConfiguration struct {
 	Status                           *ServiceStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// Service constructs an declarative configuration of the Service type for use with
+// Service constructs a declarative configuration of the Service type for use with
 // apply.
 func Service(name, namespace string) *ServiceApplyConfiguration {
 	b := &ServiceApplyConfiguration{}
@@ -50,7 +50,7 @@ func Service(name, namespace string) *ServiceApplyConfiguration {
 // ExtractService extracts the applied configuration owned by fieldManager from
 // service. If no managedFields are found in service for fieldManager, a
 // ServiceApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // service must be a unmodified Service API object that was retrieved from the Kubernetes API.
@@ -59,8 +59,19 @@ func Service(name, namespace string) *ServiceApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractService(service *apicorev1.Service, fieldManager string) (*ServiceApplyConfiguration, error) {
+	return extractService(service, fieldManager, "")
+}
+
+// ExtractServiceStatus is the same as ExtractService except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractServiceStatus(service *apicorev1.Service, fieldManager string) (*ServiceApplyConfiguration, error) {
+	return extractService(service, fieldManager, "status")
+}
+
+func extractService(service *apicorev1.Service, fieldManager string, subresource string) (*ServiceApplyConfiguration, error) {
 	b := &ServiceApplyConfiguration{}
-	err := managedfields.ExtractInto(service, internal.Parser().Type("io.k8s.api.core.v1.Service"), fieldManager, b)
+	err := managedfields.ExtractInto(service, internal.Parser().Type("io.k8s.api.core.v1.Service"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -112,15 +123,6 @@ func (b *ServiceApplyConfiguration) WithGenerateName(value string) *ServiceApply
 func (b *ServiceApplyConfiguration) WithNamespace(value string) *ServiceApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *ServiceApplyConfiguration) WithSelfLink(value string) *ServiceApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -233,15 +235,6 @@ func (b *ServiceApplyConfiguration) WithFinalizers(values ...string) *ServiceApp
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *ServiceApplyConfiguration) WithClusterName(value string) *ServiceApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *ServiceApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -262,4 +255,10 @@ func (b *ServiceApplyConfiguration) WithSpec(value *ServiceSpecApplyConfiguratio
 func (b *ServiceApplyConfiguration) WithStatus(value *ServiceStatusApplyConfiguration) *ServiceApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *ServiceApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

@@ -40,7 +40,19 @@ fi
 readonly IS_PROW
 [[ ! -v REPO_ROOT_DIR ]] && REPO_ROOT_DIR="$(git rev-parse --show-toplevel)"
 readonly REPO_ROOT_DIR
-readonly REPO_NAME="$(basename ${REPO_ROOT_DIR})"
+
+# Resolves the repository name given a root directory.
+# Parameters: $1 - repository root directory.
+function __resolveRepoName() {
+  local repoName
+  repoName="$(basename "${1:-$(git rev-parse --show-toplevel)}")"
+  repoName="${repoName#knative-extensions-}" # Remove knative-extensions- prefix if any
+  repoName="${repoName#knative-}" # Remove knative- prefix if any
+  echo "${repoName}"
+}
+default_repo_name="$(__resolveRepoName "${REPO_ROOT_DIR}")"
+readonly REPO_NAME="${REPO_NAME:-$default_repo_name}"
+unset default_repo_name
 
 # Useful flags about the current OS
 IS_LINUX=0
@@ -56,13 +68,14 @@ readonly IS_LINUX
 readonly IS_OSX
 readonly IS_WINDOWS
 
+export TMPDIR="${TMPDIR:-$(mktemp -u -t -d knative.XXXXXXXX)}"
+mkdir -p "$TMPDIR"
 # Set ARTIFACTS to an empty temp dir if unset
 if [[ -z "${ARTIFACTS:-}" ]]; then
-  export ARTIFACTS="$(mktemp -d)"
+  ARTIFACTS="$(mktemp -u -t -d)"
+  export ARTIFACTS
 fi
-
-# On a Prow job, redirect stderr to stdout so it's synchronously added to log
-(( IS_PROW )) && exec 2>&1
+mkdir -p "$ARTIFACTS"
 
 # Return the major version of a release.
 # For example, "v0.2.1" returns "0"
@@ -89,44 +102,175 @@ function patch_version() {
   echo "${tokens[2]}"
 }
 
-# Print error message and exit 1
+# Calculates the hashcode for a given string.
+# Parameters: $* - string to be hashed.
+# See: https://stackoverflow.com/a/48863502/844449
+function hashCode() {
+  local input="$1"
+  local -i h=0
+  for ((i = 0; i < ${#input}; i++)); do
+    # val is ASCII val
+    printf -v val "%d" "'${input:$i:1}"
+    hval=$((31 * h + val))
+    # hash scheme
+    if ((hval > 2147483647)); then
+      h=$(( (hval - 2147483648) % 2147483648 ))
+    elif ((hval < -2147483648)); then
+      h=$(( (hval + 2147483648) % 2147483648 ))
+    else
+      h=$(( hval ))
+    fi
+  done
+  # final hashCode in decimal
+  printf "%d" $h
+}
+
+# Calculates the retcode for a given string. Makes sure the return code is
+# non-zero.
+# Parameters: $* - string to be hashed.
+function calcRetcode() {
+  local rc=1
+  local rcc
+  rcc="$(hashCode "$*")"
+  if [[ $rcc != 0 ]]; then
+    rc=$(( rcc % 255 ))
+  fi
+  echo "$rc"
+}
+
+# Print error message.
+# Parameters: $* - error message to be displayed
+function error() {
+  local first="$1"
+  shift
+  local args=("ERROR: $first" "$@")
+  gum_banner \
+      --color '#D00' \
+      --padding '1 3' \
+      --border double \
+      "${args[@]}" > /dev/stderr
+}
+
+# Print error message and call exit(n) where n calculated from the error message.
 # Parameters: $1..$n - error message to be displayed
+# Globals: abort_retcode will change the default retcode to be returned
 function abort() {
-  echo "error: $*"
-  exit 1
+  error "$@"
+  readonly abort_retcode="${abort_retcode:-$(calcRetcode "$*")}"
+  exit "$abort_retcode"
+}
+
+# Simple header for logging purposes.
+function header() {
+  local upper
+  upper="$(echo "$*" | tr '[:lower:]' '[:upper:]')"
+  gum_banner \
+    --border double \
+    --color 44 \
+    --padding '1 3' \
+    "$upper"
+}
+
+# Simple subheader for logging purposes.
+function subheader() {
+  gum_banner \
+      --color 45 \
+      "$@"
+}
+
+# Simple log step for logging purposes.
+function log.step() {
+  echo "=== $*" | gum_style --foreground 44
+}
+
+# Simple log for logging purposes.
+function log() {
+  echo "--- $*" | gum_style --foreground 45
+}
+
+# Simple warning banner for logging purposes.
+function warning() {
+  local first="$1"
+  shift
+  local args=("WARN: $first" "$@")
+  gum_banner \
+    --color '#DD0' \
+    --padding '1 3' \
+    --border rounded \
+    "${args[@]}" > /dev/stderr
 }
 
 # Display a box banner.
 # Parameters: $1 - character to use for the box.
 #             $2 - banner message.
+# Deprecated: Use `gum_banner` instead.
 function make_banner() {
   local msg="$1$1$1$1 $2 $1$1$1$1"
-  local border="${msg//[-0-9A-Za-z _.,\/()\']/$1}"
+  local border="${msg//[^$1]/$1}"
   echo -e "${border}\n${msg}\n${border}"
   # TODO(adrcunha): Remove once logs have timestamps on Prow
   # For details, see https://github.com/kubernetes/test-infra/issues/10100
-  echo -e "$1$1$1$1 $(TZ='America/Los_Angeles' date)\n${border}"
+  if (( IS_PROW )); then
+    echo -e "$1$1$1$1 $(TZ='UTC' date --rfc-3339=ns)\n${border}"
+  fi
 }
 
-# Simple header for logging purposes.
-function header() {
-  local upper="$(echo $1 | tr a-z A-Z)"
-  make_banner "=" "${upper}"
+# Display a fancy box banner.
+# Parameters:
+#   [--border <type>] - a gum border type for the box, defaults to 'rounded'
+#   [--color <color>] - a gum color for the box, defaults to '0''
+#   [--padding <padding>] - a gum padding for the box, defaults to '0 1'
+#   $* - banner message.
+function gum_banner() {
+  local border='rounded'
+  local color='0'
+  local padding='0 1'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --border)
+        border="$2"
+        shift 2
+        ;;
+      --color)
+        color="$2"
+        shift 2
+        ;;
+      --padding)
+        padding="$2"
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  local args=(
+    --align center
+    --border "$border"
+    --foreground "$color"
+    --border-foreground "$color"
+    --padding "$padding"
+    "$@"
+  )
+  # TODO: Remove once logs have timestamps on Prow, details see:
+  #       https://github.com/kubernetes/test-infra/issues/10100
+  if (( IS_PROW )); then
+    local dt
+    # RFC3339Nano format with 3 digits of ns without timezone offset
+    dt="$(TZ='UTC' date --rfc-3339=ns | sed -E 's/\.([0-9]{3})[0-9]+.+$/.\1/')"
+    args+=('' "at $dt")
+  fi
+  gum_style "${args[@]}"
 }
 
-# Simple subheader for logging purposes.
-function subheader() {
-  make_banner "-" "$1"
-}
-
-# Simple warning banner for logging purposes.
-function warning() {
-  make_banner "!" "$1"
+# Simple info banner for logging purposes.
+function gum_style() {
+  go_run github.com/charmbracelet/gum@v0.14.1 style "$@"
 }
 
 # Checks whether the given function exists.
 function function_exists() {
-  [[ "$(type -t $1)" == "function" ]]
+  [[ "$(type -t "$1")" == "function" ]]
 }
 
 # GitHub Actions aware output grouping.
@@ -134,7 +278,7 @@ function group() {
   # End the group is there is already a group.
   if [ -z ${__GROUP_TRACKER+x} ]; then
     export __GROUP_TRACKER="grouping"
-    trap end_group EXIT
+    add_trap end_group EXIT
   else
     end_group
   fi
@@ -145,10 +289,10 @@ function group() {
 # GitHub Actions aware output grouping.
 function start_group() {
   if [[ -n ${GITHUB_WORKFLOW:-} ]]; then
-    echo "::group::$@"
-    trap end_group EXIT
+    echo "::group::$*"
+    add_trap end_group EXIT
   else
-    echo "--- $@"
+    log "$@"
   fi
 }
 
@@ -429,7 +573,7 @@ function mktemp_with_extension() {
 function create_junit_xml() {
   local xml
   xml="$(mktemp_with_extension "${ARTIFACTS}"/junit_XXXXXXXX xml)"
-  echo "JUnit file ${xml} is created for reporting the test result"
+  echo "XML report for $1::$2 written to ${xml}"
   run_kntest junit --suite="$1" --name="$2" --err-msg="$3" --dest="${xml}" || return 1
 }
 
@@ -437,37 +581,38 @@ function create_junit_xml() {
 # Parameters: $1... - parameters to go test
 function report_go_test() {
   local go_test_args=( "$@" )
-  # Install gotestsum if necessary.
-  run_go_tool gotest.tools/gotestsum gotestsum --help > /dev/null 2>&1
-  # Capture the test output to the report file.
-  local report
-  report="$(mktemp)"
-  local xml
+  local logfile xml ansilog htmllog
   xml="$(mktemp_with_extension "${ARTIFACTS}"/junit_XXXXXXXX xml)"
+  # Keep the suffix, so files are related.
+  logfile="${xml/junit_/go_test_}"
+  logfile="${logfile/.xml/.jsonl}"
   echo "Running go test with args: ${go_test_args[*]}"
-  capture_output "${report}" gotestsum --format "${GO_TEST_VERBOSITY:-testname}" \
-    --junitfile "${xml}" --junitfile-testsuite-name relative --junitfile-testcase-classname relative \
-    -- "${go_test_args[@]}"
-  local failed=$?
-  echo "Finished run, return code is ${failed}"
+  local gotest_retcode=0
+  go_run gotest.tools/gotestsum@v1.11.0 \
+    --format "${GO_TEST_VERBOSITY:-testname}" \
+    --junitfile "${xml}" \
+    --junitfile-testsuite-name relative \
+    --junitfile-testcase-classname relative \
+    --jsonfile "${logfile}" \
+    -- "${go_test_args[@]}" || gotest_retcode=$?
+  echo "Finished run, return code is ${gotest_retcode}"
 
   echo "XML report written to ${xml}"
-  if [[ -n "$(grep '<testsuites></testsuites>' "${xml}")" ]]; then
-    # XML report is empty, something's wrong; use the output as failure reason
-    create_junit_xml _go_tests "GoTests" "$(cat "${report}")"
-  fi
-  # Capture and report any race condition errors
-  local race_errors
-  race_errors="$(sed -n '/^WARNING: DATA RACE$/,/^==================$/p' "${report}")"
-  create_junit_xml _go_tests "DataRaceAnalysis" "${race_errors}"
-  if (( ! IS_PROW )); then
-    # Keep the suffix, so files are related.
-    local logfile=${xml/junit_/go_test_}
-    logfile=${logfile/.xml/.log}
-    cp "${report}" "${logfile}"
-    echo "Test log written to ${logfile}"
-  fi
-  return ${failed}
+  echo "Test log (JSONL) written to ${logfile}"
+
+  ansilog="${logfile/.jsonl/-ansi.log}"
+  go_run github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@v2.5.0 \
+    -input "${logfile}" \
+    -showteststatus \
+    -nofail > "$ansilog"
+  echo "Test log (ANSI) written to ${ansilog}"
+
+  htmllog="${logfile/.jsonl/.html}"
+  go_run github.com/buildkite/terminal-to-html/v3/cmd/terminal-to-html@v3.10.0 \
+    --preview < "$ansilog" > "$htmllog"
+  echo "Test log (HTML) written to ${htmllog}"
+
+  return ${gotest_retcode}
 }
 
 # Install Knative Serving in the current cluster.
@@ -532,42 +677,44 @@ function start_knative_eventing_extension() {
   wait_until_pods_running "$2" || return 1
 }
 
-# Install the stable release of eventing extension sugar controller in the current cluster.
-# Parameters: $1 - Knative Eventing release version, e.g. 0.16.0
-function start_release_eventing_sugar_controller() {
-  start_knative_eventing_extension "https://storage.googleapis.com/knative-releases/eventing/previous/v$1/eventing-sugar-controller.yaml" "knative-eventing"
-}
-
-# Install the sugar cotroller eventing extension
-function start_latest_eventing_sugar_controller() {
-  start_knative_eventing_extension "${KNATIVE_EVENTING_SUGAR_CONTROLLER_RELEASE}" "knative-eventing"
+# Run a go utility without installing it.
+# Parameters: $1 - tool package for go run.
+#             $2..$n - parameters passed to the tool.
+function go_run() {
+  local package
+  package="$1"
+  if [[ "$package" != *@* ]]; then
+    abort 'Package for "go_run" needs to have @version'
+  fi
+  if [[ "$package" == *@latest ]] && [[ "$package" != knative.dev* ]]; then
+    warning 'Using @latest version for external dependencies is unsafe. Use numbered version!'
+  fi
+  shift 1
+  GORUN_PATH="${GORUN_PATH:-$(go env GOPATH)}"
+  # Some CI environments may have non-writable GOPATH
+  if ! [ -w "${GORUN_PATH}" ]; then
+    GORUN_PATH="$(mktemp -t -d -u gopath.XXXXXXXX)"
+  fi
+  export GORUN_PATH
+  GOPATH="${GORUN_PATH}" \
+  GOFLAGS='' \
+    go run "$package" "$@"
 }
 
 # Run a go tool, installing it first if necessary.
-# Parameters: $1 - tool package/dir for go get/install.
+# Parameters: $1 - tool package/dir for go install.
 #             $2 - tool to run.
 #             $3..$n - parameters passed to the tool.
+# Deprecated: use go_run instead
 function run_go_tool() {
-  local tool=$2
-  local install_failed=0
-  if [[ -z "$(which ${tool})" ]]; then
-    local action=get
-    [[ $1 =~ ^[\./].* ]] && action=install
-    # Avoid running `go get` from root dir of the repository, as it can change go.sum and go.mod files.
-    # See discussions in https://github.com/golang/go/issues/27643.
-    if [[ ${action} == "get" && $(pwd) == "${REPO_ROOT_DIR}" ]]; then
-      local temp_dir="$(mktemp -d)"
-      # Swallow the output as we are returning the stdout in the end.
-      pushd "${temp_dir}" > /dev/null 2>&1
-      GOFLAGS="" go ${action} "$1" || install_failed=1
-      popd > /dev/null 2>&1
-    else
-      GOFLAGS="" go ${action} "$1" || install_failed=1
-    fi
+  warning 'The "run_go_tool" function is deprecated. Use "go_run" instead.'
+  local package=$1
+  # If no `@version` is provided, default to adding `@latest`
+  if [[ "$package" != *@* ]]; then
+    package=$package@latest
   fi
-  (( install_failed )) && return ${install_failed}
   shift 2
-  ${tool} "$@"
+  go_run "$package" "$@"
 }
 
 # Add function call to trap
@@ -580,9 +727,28 @@ function add_trap {
     local current_trap
     current_trap="$(trap -p "$trap_signal" | cut -d\' -f2)"
     local new_cmd="($cmd)"
-    [[ -n "${current_trap}" ]] && new_cmd="${current_trap};${new_cmd}"
+    [[ -n "${current_trap}" ]] && new_cmd="${new_cmd};${current_trap}"
     trap -- "${new_cmd}" "$trap_signal"
   done
+}
+
+# Run a command, described by $1, for every go module in the project.
+# Parameters: $1      - Description of the command being run,
+#             $2 - $n - Arguments to pass to the command.
+function foreach_go_module() {
+  local failed=0
+  local -r cmd="$1"
+  shift
+  local gomod_dir
+  while read -r gomod_dir; do
+    pushd "$gomod_dir" > /dev/null
+    "$cmd" "$@" || failed=$?
+    popd > /dev/null
+    if (( failed )); then
+      echo "Command '${cmd}' failed in module $gomod_dir: $failed" >&2
+      return $failed
+    fi
+  done < <(go_run knative.dev/toolbox/modscope@latest ls -p)
 }
 
 # Update go deps.
@@ -597,14 +763,41 @@ function add_trap {
 # global env var: FLOATING_DEPS
 # --upgrade will set GOPROXY to direct unless it is already set.
 function go_update_deps() {
-  cd "${REPO_ROOT_DIR}" || return 1
+  # The go.work.sum will be truncated if it exists. This is to allow the
+  # `go mod tidy` to resolve the dependencies, without the influence of the
+  # sums from the workspace.
+  __clean_goworksum_if_exists
+  foreach_go_module __go_update_deps_for_module "$@"
+  __remove_goworksum_if_empty
+}
 
-  export GO111MODULE=on
+function __clean_goworksum_if_exists() {
+  if [ -f "$REPO_ROOT_DIR/go.work.sum" ]; then
+    log.step 'Cleaning the go.work.sum file'
+    truncate -s 0 "$REPO_ROOT_DIR/go.work.sum"
+  fi
+}
+
+function __remove_goworksum_if_empty() {
+  if [ -f "$REPO_ROOT_DIR/go.work" ]; then
+    log.step 'Syncing the go workspace'
+    go work sync
+  fi
+  if ! [ -s "$REPO_ROOT_DIR/go.work.sum" ]; then
+    log.step 'Removing empty go.work.sum'
+    rm -f "$REPO_ROOT_DIR/go.work.sum"
+  fi
+}
+
+function __go_update_deps_for_module() {
+  ( # do not modify the environment
+  set -Eeuo pipefail
+
   export GOFLAGS=""
   export GONOSUMDB="${GONOSUMDB:-},knative.dev/*"
   export GONOPROXY="${GONOPROXY:-},knative.dev/*"
 
-  echo "=== Update Deps for Golang"
+  log.step "Update Deps for Golang module: $(go_mod_module_name)"
 
   local UPGRADE=0
   local RELEASE="v9000.1" # release v9000 is so far in the future, it will always pick the default branch.
@@ -630,7 +823,7 @@ function go_update_deps() {
     else
       group "Upgrading to release ${RELEASE}"
     fi
-    FLOATING_DEPS+=( $(run_go_tool knative.dev/test-infra/buoy buoy float ${REPO_ROOT_DIR}/go.mod "${buoyArgs[@]}") )
+    FLOATING_DEPS+=( $(go_run knative.dev/toolbox/buoy@latest float ./go.mod "${buoyArgs[@]}") )
     if [[ ${#FLOATING_DEPS[@]} > 0 ]]; then
       echo "Floating deps to ${FLOATING_DEPS[@]}"
       go get -d ${FLOATING_DEPS[@]}
@@ -639,38 +832,57 @@ function go_update_deps() {
     fi
   fi
 
-  group "Go mod tidy and vendor"
+  group "Go mod tidy"
 
   # Prune modules.
-  local orig_pipefail_opt=$(shopt -p -o pipefail)
+  local orig_pipefail_opt
+  orig_pipefail_opt=$(shopt -p -o pipefail)
   set -o pipefail
   go mod tidy 2>&1 | grep -v "ignoring symlink" || true
-  go mod vendor 2>&1 |  grep -v "ignoring symlink" || true
+  go get toolchain@none
+
+  if [[ "${FORCE_VENDOR:-false}" == "true" ]] || [ -d vendor ]; then
+    group "Go mod vendor"
+    # Call go work vendor for Go 1.22+ and go.work file exists.
+    if [ -f "$REPO_ROOT_DIR/go.work" ] && go help work vendor &>/dev/null; then
+      go work vendor
+    else
+      go mod vendor
+    fi
+  else
+    go mod download -x
+  fi
   eval "$orig_pipefail_opt"
 
-  group "Removing unwanted vendor files"
+  if [[ "${FORCE_VENDOR:-false}" == "true" ]] || [ -d vendor ]; then
+    group "Removing unwanted vendor files"
+    find vendor/ \( -name "OWNERS" \
+      -o -name "OWNERS_ALIASES" \
+      -o -name "BUILD" \
+      -o -name "BUILD.bazel" \
+      -o -name "*_test.go" \) -exec rm -f {} +
 
-  # Remove unwanted vendor files
-  find vendor/ \( -name "OWNERS" \
-    -o -name "OWNERS_ALIASES" \
-    -o -name "BUILD" \
-    -o -name "BUILD.bazel" \
-    -o -name "*_test.go" \) -exec rm -f {} +
+    export GOFLAGS=-mod=vendor
 
-  export GOFLAGS=-mod=vendor
+    group "Removing broken symlinks"
+    remove_broken_symlinks ./vendor
+  fi
 
-  group "Updating licenses"
-  update_licenses third_party/VENDOR-LICENSE "./..."
-
-  group "Removing broken symlinks"
-  remove_broken_symlinks ./vendor
+  group "Checking licenses"
+  check_licenses
+  )
 }
+
 
 # Return the go module name of the current module.
 # Intended to be used like:
 #   export MODULE_NAME=$(go_mod_module_name)
 function go_mod_module_name() {
-  go mod graph | cut -d' ' -f 1 | grep -v '@' | head -1
+  go_run knative.dev/toolbox/modscope@latest current
+}
+
+function __is_checkout_onto_gopath() {
+  ! [ "${REPO_ROOT_DIR##"$(go env GOPATH)"}" = "$REPO_ROOT_DIR" ]
 }
 
 # Return a GOPATH to a temp directory. Works around the out-of-GOPATH issues
@@ -678,44 +890,36 @@ function go_mod_module_name() {
 # Intended to be used like:
 #   export GOPATH=$(go_mod_gopath_hack)
 function go_mod_gopath_hack() {
-    # Skip this if the directory is already checked out onto the GOPATH.
-  if [[ "${REPO_ROOT_DIR##$(go env GOPATH)}" != "$REPO_ROOT_DIR" ]]; then
+  # Skip this if the directory is already checked out onto the GOPATH.
+  if __is_checkout_onto_gopath; then
     go env GOPATH
     return
   fi
 
-  local TMP_DIR="$(mktemp -d)"
-  local TMP_REPO_PATH="${TMP_DIR}/src/$(go_mod_module_name)"
-  mkdir -p "$(dirname "${TMP_REPO_PATH}")" && ln -s "${REPO_ROOT_DIR}" "${TMP_REPO_PATH}"
+  local TMP_GOPATH TMP_REPO_PATH
+  TMP_GOPATH="$TMPDIR/go"
+  TMP_REPO_PATH="${TMP_GOPATH}/src/$(go_mod_module_name)"
+  if [ -d "${TMP_REPO_PATH}" ]; then
+    echo "${TMP_GOPATH}"
+    return
+  fi
+  mkdir -p "$(dirname "${TMP_REPO_PATH}")"
+  ln -s "${REPO_ROOT_DIR}" "${TMP_REPO_PATH}"
 
-  echo "${TMP_DIR}"
+  echo "${TMP_GOPATH}"
 }
 
-# Run kntest tool, error out and ask users to install it if it's not currently installed.
+# Run kntest tool
 # Parameters: $1..$n - parameters passed to the tool.
 function run_kntest() {
-  if [[ ! -x "$(command -v kntest)" ]]; then
-    echo "--- FAIL: kntest not installed, please clone knative test-infra repo and run \`go install ./kntest/cmd/kntest\` to install it"; return 1;
-  fi
-  kntest "$@"
-}
-
-# Run go-licenses to update licenses.
-# Parameters: $1 - output file, relative to repo root dir.
-#             $2 - directory to inspect.
-function update_licenses() {
-  cd "${REPO_ROOT_DIR}" || return 1
-  local dst=$1
-  local dir=$2
-  shift
-  run_go_tool github.com/google/go-licenses go-licenses save "${dir}" --save_path="${dst}" --force || \
-    { echo "--- FAIL: go-licenses failed to update licenses"; return 1; }
+  go_run knative.dev/test-infra/tools/kntest/cmd/kntest@latest "$@"
 }
 
 # Run go-licenses to check for forbidden licenses.
 function check_licenses() {
   # Check that we don't have any forbidden licenses.
-  run_go_tool github.com/google/go-licenses go-licenses check "${REPO_ROOT_DIR}/..." || \
+  go_run github.com/google/go-licenses@v1.6.0 \
+    check "${REPO_ROOT_DIR}/..." || \
     { echo "--- FAIL: go-licenses failed the license check"; return 1; }
 }
 
@@ -747,7 +951,7 @@ function is_protected_project() {
 # Remove symlinks in a path that are broken or lead outside the repo.
 # Parameters: $1 - path name, e.g. vendor
 function remove_broken_symlinks() {
-  for link in $(find $1 -type l); do
+  for link in $(find "$1" -type l); do
     # Remove broken symlinks
     if [[ ! -e ${link} ]]; then
       unlink ${link}
@@ -916,6 +1120,7 @@ function latest_version() {
 
 # Initializations that depend on previous functions.
 # These MUST come last.
+MODULE_NAME="$(go_mod_module_name)"
 
 readonly _TEST_INFRA_SCRIPTS_DIR="$(dirname $(get_canonical_path "${BASH_SOURCE[0]}"))"
 readonly REPO_NAME_FORMATTED="Knative $(capitalize "${REPO_NAME//-/ }")"
@@ -925,4 +1130,4 @@ readonly KNATIVE_SERVING_RELEASE_CRDS="$(get_latest_knative_yaml_source "serving
 readonly KNATIVE_SERVING_RELEASE_CORE="$(get_latest_knative_yaml_source "serving" "serving-core")"
 readonly KNATIVE_NET_ISTIO_RELEASE="$(get_latest_knative_yaml_source "net-istio" "net-istio")"
 readonly KNATIVE_EVENTING_RELEASE="$(get_latest_knative_yaml_source "eventing" "eventing")"
-readonly KNATIVE_EVENTING_SUGAR_CONTROLLER_RELEASE="$(get_latest_knative_yaml_source "eventing" "eventing-sugar-controller")"
+readonly KNATIVE_EVENTING_RELEASE_TLS="$(get_latest_knative_yaml_source "eventing" "eventing-tls-networking")"

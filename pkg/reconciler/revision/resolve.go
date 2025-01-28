@@ -42,6 +42,8 @@ const (
 	// Kubernetes CA certificate bundle is mounted into the pod here, see:
 	// https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/#trusting-tls-in-a-cluster
 	k8sCertPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+	tlsMinVersionEnvKey = "TAG_TO_DIGEST_TLS_MIN_VERSION"
 )
 
 // newResolverTransport returns an http.Transport that appends the certs bundle
@@ -63,12 +65,26 @@ func newResolverTransport(path string, maxIdleConns, maxIdleConnsPerHost int) (*
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = maxIdleConns
 	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	//nolint:gosec // quay.io still required 1.2 - bump if they've moved up
 	transport.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion: tlsMinVersionFromEnv(tls.VersionTLS12),
 		RootCAs:    pool,
 	}
 
 	return transport, nil
+}
+
+func tlsMinVersionFromEnv(defaultTLSMinVersion uint16) uint16 {
+	switch tlsMinVersion := os.Getenv(tlsMinVersionEnvKey); tlsMinVersion {
+	case "1.2":
+		return tls.VersionTLS12
+	case "1.3":
+		return tls.VersionTLS13
+	case "":
+		return defaultTLSMinVersion
+	default:
+		panic(fmt.Sprintf("the environment variable %q has to be either '1.2' or '1.3'", tlsMinVersionEnvKey))
+	}
 }
 
 // Resolve resolves the image references that use tags to digests.
@@ -76,7 +92,8 @@ func (r *digestResolver) Resolve(
 	ctx context.Context,
 	image string,
 	opt k8schain.Options,
-	registriesToSkip sets.String) (string, error) {
+	registriesToSkip sets.Set[string],
+) (string, error) {
 	kc, err := k8schain.New(ctx, r.client, opt)
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize authentication: %w", err)

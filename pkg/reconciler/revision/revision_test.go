@@ -19,8 +19,8 @@ package revision
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math/rand"
+	"strconv"
 	"testing"
 	"time"
 
@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 	fakecachingclient "knative.dev/caching/pkg/client/injection/client/fake"
 	fakeimageinformer "knative.dev/caching/pkg/client/injection/informers/caching/v1alpha1/image/fake"
+	_ "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate/fake"
 	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
 	fakedeploymentinformer "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment/fake"
 	_ "knative.dev/pkg/client/injection/kube/informers/core/v1/configmap/fake"
@@ -43,13 +44,12 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	network "knative.dev/networking/pkg"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/apis"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
@@ -83,8 +83,8 @@ func newTestController(t *testing.T, configs []*corev1.ConfigMap, opts ...reconc
 	context.CancelFunc,
 	[]controller.Informer,
 	*controller.Impl,
-	*configmap.ManualWatcher) {
-
+	*configmap.ManualWatcher,
+) {
 	ctx, cancel, informers := SetupFakeContextWithCancel(t)
 	t.Cleanup(cancel) // cancel is reentrant, so if necessary callers can call it directly, if needed.
 	configMapWatcher := &configmap.ManualWatcher{Namespace: system.Namespace()}
@@ -98,7 +98,7 @@ func newTestController(t *testing.T, configs []*corev1.ConfigMap, opts ...reconc
 	for _, cm := range append([]*corev1.ConfigMap{{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      network.ConfigName,
+			Name:      netcfg.ConfigMapName,
 		},
 	}, {
 		ObjectMeta: metav1.ObjectMeta{
@@ -170,7 +170,7 @@ func createRevision(
 	// Since Reconcile looks in the lister, we need to add it to the informer
 	fakerevisioninformer.Get(ctx).Informer().GetIndexer().Add(rev)
 
-	if err := controller.Reconciler.Reconcile(context.Background(), KeyOrDie(rev)); err == nil {
+	if err := controller.Reconciler.Reconcile(ctx, KeyOrDie(rev)); err == nil {
 		rev, _, _ = addResourcesToInformers(t, ctx, rev)
 	}
 	return rev
@@ -186,7 +186,7 @@ func updateRevision(
 	fakeservingclient.Get(ctx).ServingV1().Revisions(rev.Namespace).Update(ctx, rev, metav1.UpdateOptions{})
 	fakerevisioninformer.Get(ctx).Informer().GetIndexer().Update(rev)
 
-	if err := controller.Reconciler.Reconcile(context.Background(), KeyOrDie(rev)); err == nil {
+	if err := controller.Reconciler.Reconcile(ctx, KeyOrDie(rev)); err == nil {
 		addResourcesToInformers(t, ctx, rev)
 	}
 }
@@ -229,7 +229,7 @@ func addResourcesToInformers(t *testing.T, ctx context.Context, rev *v1.Revision
 
 type nopResolver struct{}
 
-func (r *nopResolver) Resolve(_ *zap.SugaredLogger, rev *v1.Revision, _ k8schain.Options, _ sets.String, _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
+func (r *nopResolver) Resolve(_ *zap.SugaredLogger, rev *v1.Revision, _ k8schain.Options, _ sets.Set[string], _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
 	status := []v1.ContainerStatus{{
 		Name: rev.Spec.Containers[0].Name,
 	}}
@@ -266,7 +266,7 @@ func testPodSpec() corev1.PodSpec {
 				TimeoutSeconds: 42,
 			},
 			ReadinessProbe: &corev1.Probe{
-				Handler: corev1.Handler{
+				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
 						Path: "health",
 					},
@@ -340,7 +340,7 @@ func testDefaultsCM() *corev1.ConfigMap {
 
 type notResolvedYetResolver struct{}
 
-func (r *notResolvedYetResolver) Resolve(_ *zap.SugaredLogger, _ *v1.Revision, _ k8schain.Options, _ sets.String, _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
+func (r *notResolvedYetResolver) Resolve(_ *zap.SugaredLogger, _ *v1.Revision, _ k8schain.Options, _ sets.Set[string], _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
 	return nil, nil, nil
 }
 
@@ -352,7 +352,7 @@ type errorResolver struct {
 	cleared bool
 }
 
-func (r *errorResolver) Resolve(_ *zap.SugaredLogger, _ *v1.Revision, _ k8schain.Options, _ sets.String, _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
+func (r *errorResolver) Resolve(_ *zap.SugaredLogger, _ *v1.Revision, _ k8schain.Options, _ sets.Set[string], _ time.Duration) ([]v1.ContainerStatus, []v1.ContainerStatus, error) {
 	return nil, nil, r.err
 }
 
@@ -400,16 +400,18 @@ func TestResolutionFailed(t *testing.T) {
 }
 
 func TestUpdateRevWithWithUpdatedLoggingURL(t *testing.T) {
-	ctx, _, _, controller, watcher := newTestController(t, []*corev1.ConfigMap{{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: system.Namespace(),
-			Name:      metrics.ConfigMapName(),
+	ctx, _, _, controller, watcher := newTestController(t, []*corev1.ConfigMap{
+		testDeploymentCM(),
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: system.Namespace(),
+				Name:      metrics.ConfigMapName(),
+			},
+			Data: map[string]string{
+				"logging.enable-var-log-collection": "true",
+				"logging.revision-url-template":     "http://old-logging.test.com?filter=${REVISION_UID}",
+			},
 		},
-		Data: map[string]string{
-			"logging.enable-var-log-collection": "true",
-			"logging.revision-url-template":     "http://old-logging.test.com?filter=${REVISION_UID}",
-		},
-	}, testDeploymentCM(),
 	})
 	revClient := fakeservingclient.Get(ctx).ServingV1().Revisions(testNamespace)
 
@@ -449,7 +451,7 @@ func TestStatusUnknownWhenDigestsNotResolvedYet(t *testing.T) {
 
 	fakeservingclient.Get(ctx).ServingV1().Revisions(rev.Namespace).Create(ctx, rev, metav1.CreateOptions{})
 	fakerevisioninformer.Get(ctx).Informer().GetIndexer().Add(rev)
-	if err := controller.Reconciler.Reconcile(context.Background(), KeyOrDie(rev)); err != nil {
+	if err := controller.Reconciler.Reconcile(ctx, KeyOrDie(rev)); err != nil {
 		t.Fatal("Reconcile failed:", err)
 	}
 
@@ -503,7 +505,7 @@ func TestGlobalResyncOnDefaultCMChange(t *testing.T) {
 
 	revClient.Create(ctx, rev, metav1.CreateOptions{})
 	revL := fakerevisioninformer.Get(ctx).Lister()
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 		// The only error we're getting in the test reasonably is NotFound.
 		r, _ := revL.Revisions(rev.Namespace).Get(rev.Name)
 		return r != nil && r.Status.ObservedGeneration == r.Generation, nil
@@ -514,12 +516,9 @@ func TestGlobalResyncOnDefaultCMChange(t *testing.T) {
 
 	// Ensure initial PA is in the informers.
 	paL := fakepainformer.Get(ctx).Lister().PodAutoscalers(rev.Namespace)
-	if ierr := wait.PollImmediate(50*time.Millisecond, 6*time.Second, func() (bool, error) {
+	if ierr := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 6*time.Second, true, func(context.Context) (bool, error) {
 		_, err = paL.Get(rev.Name)
-		if apierrs.IsNotFound(err) {
-			return false, err
-		}
-		return err == nil, err
+		return err == nil, nil
 	}); ierr != nil {
 		t.Fatal("Failed to see PA creation:", ierr)
 	}
@@ -547,15 +546,15 @@ func TestGlobalResyncOnDefaultCMChange(t *testing.T) {
 				Name:      config.DefaultsConfigName,
 			},
 			Data: map[string]string{
-				"container-concurrency": fmt.Sprint(pos),
+				"container-concurrency": strconv.FormatInt(pos, 10),
 			},
 		})
 
 		pa, err := paL.Get(rev.Name)
 		t.Logf("Initial PA: %#v GetErr: %v", pa, err)
-		if ierr := wait.PollImmediate(50*time.Millisecond, 2*time.Second, func() (bool, error) {
+		if ierr := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 			pa, err = paL.Get(rev.Name)
-			return pa != nil && pa.Spec.ContainerConcurrency == pos, err
+			return pa != nil && pa.Spec.ContainerConcurrency == pos, nil
 		}); ierr == nil { // err==nil!
 			break
 		}
@@ -590,7 +589,7 @@ func TestGlobalResyncOnConfigMapUpdateRevision(t *testing.T) {
 
 	revClient.Create(ctx, rev, metav1.CreateOptions{})
 	revL := fakerevisioninformer.Get(ctx).Lister()
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 		// The only error we're getting in the test reasonably is NotFound.
 		r, _ := revL.Revisions(rev.Namespace).Get(rev.Name)
 		// We only create a single revision, but make sure it is reconciled.
@@ -612,9 +611,9 @@ func TestGlobalResyncOnConfigMapUpdateRevision(t *testing.T) {
 	})
 
 	want := "http://new-logging.test.com?filter=" + string(rev.UID)
-	if ierr := wait.PollImmediate(50*time.Millisecond, 5*time.Second, func() (bool, error) {
-		r, err := revL.Revisions(rev.Namespace).Get(rev.Name)
-		return r != nil && r.Status.LogURL == want, err
+	if ierr := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
+		r, _ := revL.Revisions(rev.Namespace).Get(rev.Name)
+		return r != nil && r.Status.LogURL == want, nil
 	}); ierr != nil {
 		t.Fatal("Failed to see Revision propagation:", ierr)
 	}
@@ -668,7 +667,7 @@ func TestGlobalResyncOnConfigMapUpdateDeployment(t *testing.T) {
 
 	revClient.Create(ctx, rev, metav1.CreateOptions{})
 	revL := fakerevisioninformer.Get(ctx).Lister().Revisions(rev.Namespace)
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 		// The only error we're getting in the test reasonably is NotFound.
 		r, _ := revL.Get(rev.Name)
 		// We only create a single revision, but make sure it is reconciled.
@@ -681,9 +680,9 @@ func TestGlobalResyncOnConfigMapUpdateDeployment(t *testing.T) {
 	watcher.OnChange(configMapToUpdate)
 
 	depL := fakedeploymentinformer.Get(ctx).Lister().Deployments(rev.Namespace)
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
-		dep, err := depL.Get(names.Deployment(rev))
-		return dep != nil && checkF(dep), err
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
+		dep, _ := depL.Get(names.Deployment(rev))
+		return dep != nil && checkF(dep), nil
 	}); err != nil {
 		t.Error("Failed to see deployment properly updating:", err)
 	}
@@ -717,7 +716,7 @@ func TestNewRevisionCallsSyncHandler(t *testing.T) {
 	}
 
 	// Poll to see PA object to be created.
-	if err := wait.PollImmediate(25*time.Millisecond, 3*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 3*time.Second, true, func(context.Context) (bool, error) {
 		pa, _ := servingClient.AutoscalingV1alpha1().PodAutoscalers(rev.Namespace).Get(
 			ctx, rev.Name, metav1.GetOptions{})
 		return pa != nil, nil
@@ -727,9 +726,9 @@ func TestNewRevisionCallsSyncHandler(t *testing.T) {
 
 	// Poll to see if the deployment is created. This should _already_ be there.
 	depL := fakedeploymentinformer.Get(ctx).Lister().Deployments(rev.Namespace)
-	if err := wait.PollImmediate(10*time.Millisecond, 1*time.Second, func() (bool, error) {
-		dep, err := depL.Get(names.Deployment(rev))
-		return dep != nil, err
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 1*time.Second, true, func(context.Context) (bool, error) {
+		dep, _ := depL.Get(names.Deployment(rev))
+		return dep != nil, nil
 	}); err != nil {
 		t.Error("Failed to see deployment creation:", err)
 	}
