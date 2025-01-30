@@ -22,7 +22,7 @@ import (
 	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // reconcilerControllerGenerator produces a file for setting up the reconciler
@@ -230,10 +230,15 @@ func NewImpl(ctx {{.contextContext|raw}}, r Interface{{if .hasClass}}, classValu
 	lister := {{.type|lowercaseSingular}}Informer.Lister()
 
 	var promoteFilterFunc func(obj interface{}) bool
+	var promoteFunc = func(bkt {{.reconcilerBucket|raw}}) {}
 
 	rec := &reconcilerImpl{
 		LeaderAwareFuncs: {{.reconcilerLeaderAwareFuncs|raw}}{
 			PromoteFunc: func(bkt {{.reconcilerBucket|raw}}, enq func({{.reconcilerBucket|raw}}, {{.typesNamespacedName|raw}})) error {
+
+				// Signal promotion event
+				promoteFunc(bkt)
+
 				all, err := lister.List({{.labelsEverything|raw}}())
 				if err != nil {
 					return err
@@ -294,6 +299,9 @@ func NewImpl(ctx {{.contextContext|raw}}, r Interface{{if .hasClass}}, classValu
 		}
 		if opts.PromoteFilterFunc != nil {
 			promoteFilterFunc = opts.PromoteFilterFunc
+		}
+		if opts.PromoteFunc != nil {
+			promoteFunc = opts.PromoteFunc
 		}
 	}
 

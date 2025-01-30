@@ -161,6 +161,13 @@ func WithServiceImage(img string) ServiceOption {
 	}
 }
 
+// WithServiceName sets the service name.
+func WithServiceName(name string) ServiceOption {
+	return func(svc *v1.Service) {
+		svc.ObjectMeta.Name = name
+	}
+}
+
 // WithTrafficTarget sets the traffic to be the provided traffic target.
 func WithTrafficTarget(tt []v1.TrafficTarget) ServiceOption {
 	return func(svc *v1.Service) {
@@ -179,6 +186,20 @@ func WithServiceTemplateMeta(m metav1.ObjectMeta) ServiceOption {
 func WithRevisionTimeoutSeconds(revisionTimeoutSeconds int64) ServiceOption {
 	return func(service *v1.Service) {
 		service.Spec.Template.Spec.TimeoutSeconds = ptr.Int64(revisionTimeoutSeconds)
+	}
+}
+
+// WithRevisionResponseStartTimeoutSeconds sets revision first byte timeout
+func WithRevisionResponseStartTimeoutSeconds(revisionResponseStartTimeoutSeconds int64) ServiceOption {
+	return func(service *v1.Service) {
+		service.Spec.Template.Spec.ResponseStartTimeoutSeconds = ptr.Int64(revisionResponseStartTimeoutSeconds)
+	}
+}
+
+// WithRevisionIdleTimeoutSeconds sets revision idle timeout
+func WithRevisionIdleTimeoutSeconds(revisionIdleTimeoutSeconds int64) ServiceOption {
+	return func(service *v1.Service) {
+		service.Spec.Template.Spec.IdleTimeoutSeconds = ptr.Int64(revisionIdleTimeoutSeconds)
 	}
 }
 
@@ -408,6 +429,22 @@ func WithReadinessProbe(p *corev1.Probe) ServiceOption {
 	}
 }
 
+// WithLivenessProbe sets the provided probe to be the liveness
+// probe on the service.
+func WithLivenessProbe(p *corev1.Probe) ServiceOption {
+	return func(s *v1.Service) {
+		s.Spec.Template.Spec.Containers[0].LivenessProbe = p
+	}
+}
+
+// WithStartupProbe sets the provided probe to be the startup
+// probe on the service.
+func WithStartupProbe(p *corev1.Probe) ServiceOption {
+	return func(s *v1.Service) {
+		s.Spec.Template.Spec.Containers[0].StartupProbe = p
+	}
+}
+
 // MarkConfigurationNotReconciled calls the function of the same name on the Service's status.
 func MarkConfigurationNotReconciled(service *v1.Service) {
 	service.Status.MarkConfigurationNotReconciled()
@@ -465,24 +502,36 @@ func WithFailedConfig(name, reason, message string) ServiceOption {
 	}
 }
 
-var (
-	// configSpec is the spec used for the different styles of Service rollout.
-	configSpec = v1.ConfigurationSpec{
-		Template: v1.RevisionTemplateSpec{
-			Spec: v1.RevisionSpec{
-				TimeoutSeconds: ptr.Int64(60),
-				PodSpec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Image: "busybox",
-					}},
-				},
+// configSpec is the spec used for the different styles of Service rollout.
+var configSpec = v1.ConfigurationSpec{
+	Template: v1.RevisionTemplateSpec{
+		Spec: v1.RevisionSpec{
+			TimeoutSeconds: ptr.Int64(60),
+			PodSpec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Image: "busybox",
+				}},
 			},
 		},
-	}
-)
+	},
+}
 
+// WithInitContainer adds init container to a service.
 func WithInitContainer(p corev1.Container) ServiceOption {
 	return func(s *v1.Service) {
 		s.Spec.Template.Spec.InitContainers = []corev1.Container{p}
+	}
+}
+
+// WithPodSecurityContext assigns security context to a service.
+func WithPodSecurityContext(secCtx corev1.PodSecurityContext) ServiceOption {
+	return func(s *v1.Service) {
+		s.Spec.Template.Spec.SecurityContext = &secCtx
+	}
+}
+
+func WithNamespace(namespace string) ServiceOption {
+	return func(svc *v1.Service) {
+		svc.ObjectMeta.Namespace = namespace
 	}
 }

@@ -28,7 +28,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// PriorityClassApplyConfiguration represents an declarative configuration of the PriorityClass type for use
+// PriorityClassApplyConfiguration represents a declarative configuration of the PriorityClass type for use
 // with apply.
 type PriorityClassApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -39,7 +39,7 @@ type PriorityClassApplyConfiguration struct {
 	PreemptionPolicy                 *corev1.PreemptionPolicy `json:"preemptionPolicy,omitempty"`
 }
 
-// PriorityClass constructs an declarative configuration of the PriorityClass type for use with
+// PriorityClass constructs a declarative configuration of the PriorityClass type for use with
 // apply.
 func PriorityClass(name string) *PriorityClassApplyConfiguration {
 	b := &PriorityClassApplyConfiguration{}
@@ -52,7 +52,7 @@ func PriorityClass(name string) *PriorityClassApplyConfiguration {
 // ExtractPriorityClass extracts the applied configuration owned by fieldManager from
 // priorityClass. If no managedFields are found in priorityClass for fieldManager, a
 // PriorityClassApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // priorityClass must be a unmodified PriorityClass API object that was retrieved from the Kubernetes API.
@@ -61,8 +61,19 @@ func PriorityClass(name string) *PriorityClassApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractPriorityClass(priorityClass *v1beta1.PriorityClass, fieldManager string) (*PriorityClassApplyConfiguration, error) {
+	return extractPriorityClass(priorityClass, fieldManager, "")
+}
+
+// ExtractPriorityClassStatus is the same as ExtractPriorityClass except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractPriorityClassStatus(priorityClass *v1beta1.PriorityClass, fieldManager string) (*PriorityClassApplyConfiguration, error) {
+	return extractPriorityClass(priorityClass, fieldManager, "status")
+}
+
+func extractPriorityClass(priorityClass *v1beta1.PriorityClass, fieldManager string, subresource string) (*PriorityClassApplyConfiguration, error) {
 	b := &PriorityClassApplyConfiguration{}
-	err := managedfields.ExtractInto(priorityClass, internal.Parser().Type("io.k8s.api.scheduling.v1beta1.PriorityClass"), fieldManager, b)
+	err := managedfields.ExtractInto(priorityClass, internal.Parser().Type("io.k8s.api.scheduling.v1beta1.PriorityClass"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -113,15 +124,6 @@ func (b *PriorityClassApplyConfiguration) WithGenerateName(value string) *Priori
 func (b *PriorityClassApplyConfiguration) WithNamespace(value string) *PriorityClassApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *PriorityClassApplyConfiguration) WithSelfLink(value string) *PriorityClassApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -234,15 +236,6 @@ func (b *PriorityClassApplyConfiguration) WithFinalizers(values ...string) *Prio
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *PriorityClassApplyConfiguration) WithClusterName(value string) *PriorityClassApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *PriorityClassApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -279,4 +272,10 @@ func (b *PriorityClassApplyConfiguration) WithDescription(value string) *Priorit
 func (b *PriorityClassApplyConfiguration) WithPreemptionPolicy(value corev1.PreemptionPolicy) *PriorityClassApplyConfiguration {
 	b.PreemptionPolicy = &value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *PriorityClassApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

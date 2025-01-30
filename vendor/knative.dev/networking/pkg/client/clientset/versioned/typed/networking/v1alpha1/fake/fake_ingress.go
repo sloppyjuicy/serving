@@ -23,7 +23,6 @@ import (
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
@@ -36,9 +35,9 @@ type FakeIngresses struct {
 	ns   string
 }
 
-var ingressesResource = schema.GroupVersionResource{Group: "networking.internal.knative.dev", Version: "v1alpha1", Resource: "ingresses"}
+var ingressesResource = v1alpha1.SchemeGroupVersion.WithResource("ingresses")
 
-var ingressesKind = schema.GroupVersionKind{Group: "networking.internal.knative.dev", Version: "v1alpha1", Kind: "Ingress"}
+var ingressesKind = v1alpha1.SchemeGroupVersion.WithKind("Ingress")
 
 // Get takes name of the ingress, and returns the corresponding ingress object, and an error if there is any.
 func (c *FakeIngresses) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.Ingress, err error) {
@@ -117,7 +116,7 @@ func (c *FakeIngresses) UpdateStatus(ctx context.Context, ingress *v1alpha1.Ingr
 // Delete takes name of the ingress and deletes it. Returns an error if one occurs.
 func (c *FakeIngresses) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewDeleteAction(ingressesResource, c.ns, name), &v1alpha1.Ingress{})
+		Invokes(testing.NewDeleteActionWithOptions(ingressesResource, c.ns, name, opts), &v1alpha1.Ingress{})
 
 	return err
 }

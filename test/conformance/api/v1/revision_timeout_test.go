@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -35,9 +36,10 @@ import (
 	. "knative.dev/serving/pkg/testing/v1"
 )
 
-// sendRequests send a request to "endpoint", returns error if unexpected response code, nil otherwise.
+// sendRequest send a request to "endpoint", returns error if unexpected response code, nil otherwise.
 func sendRequest(t *testing.T, clients *test.Clients, endpoint *url.URL,
-	initialSleep, sleep time.Duration, expectedResponseCode int) error {
+	initialSleep, sleep time.Duration, expectedResponseCode int,
+) error {
 	client, err := pkgtest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, endpoint.Hostname(), test.ServingFlags.ResolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	if err != nil {
 		return fmt.Errorf("error creating Spoofing client: %w", err)
@@ -50,13 +52,14 @@ func sendRequest(t *testing.T, clients *test.Clients, endpoint *url.URL,
 	}()
 	u, _ := url.Parse(endpoint.String())
 	q := u.Query()
-	q.Set("initialTimeout", fmt.Sprint(initialSleep.Milliseconds()))
-	q.Set("timeout", fmt.Sprint(sleep.Milliseconds()))
+	q.Set("initialTimeout", strconv.FormatInt(initialSleep.Milliseconds(), 10))
+	q.Set("timeout", strconv.FormatInt(sleep.Milliseconds(), 10))
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create new HTTP request: %w", err)
 	}
+	spoof.WithHeader(test.ServingFlags.RequestHeader())(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -67,6 +70,7 @@ func sendRequest(t *testing.T, clients *test.Clients, endpoint *url.URL,
 	if expectedResponseCode != resp.StatusCode {
 		return fmt.Errorf("response status code = %v, want = %v, response = %v", resp.StatusCode, expectedResponseCode, resp)
 	}
+
 	return nil
 }
 
@@ -76,11 +80,11 @@ func TestRevisionTimeout(t *testing.T) {
 
 	testCases := []struct {
 		name           string
-		shouldScaleTo0 bool
 		timeoutSeconds int64
 		initialSleep   time.Duration
 		sleep          time.Duration
 		expectedStatus int
+		expectedBody   string
 	}{{
 		name:           "does not exceed timeout seconds",
 		timeoutSeconds: 10,
@@ -100,7 +104,6 @@ func TestRevisionTimeout(t *testing.T) {
 	}}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -128,12 +131,13 @@ func TestRevisionTimeout(t *testing.T) {
 				spoof.IsOneOfStatusCodes(http.StatusOK, http.StatusGatewayTimeout),
 				"CheckSuccessfulResponse",
 				test.ServingFlags.ResolvableDomain,
-				test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+				test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+				spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 				t.Fatalf("Error probing %s: %v", serviceURL, err)
 			}
 
 			if err := sendRequest(t, clients, serviceURL, tc.initialSleep, tc.sleep, tc.expectedStatus); err != nil {
-				t.Errorf("Failed request with initialSleep %v, sleep %v, with revision timeout %ds and expecting status %v: %v",
+				t.Errorf("Failed request with initialSleep %v, sleep %v, with revision timeout %ds, expecting status %v: %v",
 					tc.initialSleep, tc.sleep, tc.timeoutSeconds, tc.expectedStatus, err)
 			}
 		})

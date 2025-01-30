@@ -28,21 +28,20 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
-
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
+
+	netcfg "knative.dev/networking/pkg/config"
 	filteredpodinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/pod/filtered"
 	filteredinformerfactory "knative.dev/pkg/client/injection/kube/informers/factory/filtered"
+	configmap "knative.dev/pkg/configmap/informer"
+	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection"
 	"knative.dev/pkg/injection/sharedmain"
 	"knative.dev/pkg/leaderelection"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	network "knative.dev/networking/pkg"
-	configmap "knative.dev/pkg/configmap/informer"
-	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/metrics"
 	"knative.dev/pkg/profiling"
@@ -94,7 +93,7 @@ func main() {
 
 	// We sometimes startup faster than we can reach kube-api. Poll on failure to prevent us terminating
 	var err error
-	if perr := wait.PollImmediate(time.Second, 60*time.Second, func() (bool, error) {
+	if perr := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true, func(context.Context) (bool, error) {
 		if err = version.CheckMinimumVersion(kubeClient.Discovery()); err != nil {
 			log.Print("Failed to get k8s version ", err)
 		}
@@ -127,11 +126,11 @@ func main() {
 		profilingHandler.UpdateFromConfigMap)
 
 	podLister := filteredpodinformer.Get(ctx, serving.RevisionUID).Lister()
-	networkCM, err := kubeclient.Get(ctx).CoreV1().ConfigMaps(system.Namespace()).Get(ctx, network.ConfigName, metav1.GetOptions{})
+	networkCM, err := kubeclient.Get(ctx).CoreV1().ConfigMaps(system.Namespace()).Get(ctx, netcfg.ConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		logger.Fatalw("Failed to fetch network config", zap.Error(err))
 	}
-	networkConfig, err := network.NewConfigFromConfigMap(networkCM)
+	networkConfig, err := netcfg.NewConfigFromMap(networkCM.Data)
 	if err != nil {
 		logger.Fatalw("Failed to construct network config", zap.Error(err))
 	}
@@ -158,37 +157,43 @@ func main() {
 		logger.Fatalw("Failed to start informers", zap.Error(err))
 	}
 
-	cc := componentConfigAndIP(ctx)
-
 	// accept is the func to call when this pod owns the Revision for this StatMessage.
 	accept := func(sm asmetrics.StatMessage) {
 		collector.Record(sm.Key, time.Unix(sm.Stat.Timestamp, 0), sm.Stat)
 		multiScaler.Poke(sm.Key, sm.Stat)
 	}
 
+	cc := componentConfigAndIP(ctx)
+
+	// We don't want an elector on the controller context
+	// since they will be sharing an elector
+	var electorCtx context.Context
+
 	var f *statforwarder.Forwarder
 	if b, bs, err := leaderelection.NewStatefulSetBucketAndSet(int(cc.Buckets)); err == nil {
 		logger.Info("Running with StatefulSet leader election")
-		ctx = leaderelection.WithStatefulSetElectorBuilder(ctx, cc, b)
+		electorCtx = leaderelection.WithStatefulSetElectorBuilder(ctx, cc, b)
 		f = statforwarder.New(ctx, bs)
 		if err := statforwarder.StatefulSetBasedProcessor(ctx, f, accept); err != nil {
 			logger.Fatalw("Failed to set up statefulset processors", zap.Error(err))
 		}
 	} else {
 		logger.Info("Running with Standard leader election")
-		ctx = leaderelection.WithStandardLeaderElectorBuilder(ctx, kubeClient, cc)
+		electorCtx = leaderelection.WithStandardLeaderElectorBuilder(ctx, kubeClient, cc)
 		f = statforwarder.New(ctx, bucket.AutoscalerBucketSet(cc.Buckets))
 		if err := statforwarder.LeaseBasedProcessor(ctx, f, accept); err != nil {
 			logger.Fatalw("Failed to set up lease tracking", zap.Error(err))
 		}
 	}
 
+	elector, err := setupSharedElector(electorCtx, controllers)
+	if err != nil {
+		logger.Fatalw("Failed to setup elector", zap.Error(err))
+	}
+
 	// Set up a statserver.
 	statsServer := statserver.New(statsServerAddr, statsCh, logger, f.IsBucketOwner)
-
 	defer f.Cancel()
-
-	go controller.StartAll(ctx, controllers...)
 
 	go func() {
 		for sm := range statsCh {
@@ -203,8 +208,15 @@ func main() {
 	profilingServer := profiling.NewServer(profilingHandler)
 
 	eg, egCtx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		elector.Run(egCtx)
+		return nil
+	})
 	eg.Go(statsServer.ListenAndServe)
 	eg.Go(profilingServer.ListenAndServe)
+	eg.Go(func() error {
+		return controller.StartAll(egCtx, controllers...)
+	})
 
 	// This will block until either a signal arrives or one of the grouped functions
 	// returns an error.
@@ -219,7 +231,8 @@ func main() {
 }
 
 func uniScalerFactoryFunc(podLister corev1listers.PodLister,
-	metricClient asmetrics.MetricClient) scaling.UniScalerFactory {
+	metricClient asmetrics.MetricClient,
+) scaling.UniScalerFactory {
 	return func(decider *scaling.Decider) (scaling.UniScaler, error) {
 		configName := decider.Labels[serving.ConfigurationLabelKey]
 		if configName == "" {
@@ -240,7 +253,7 @@ func uniScalerFactoryFunc(podLister corev1listers.PodLister,
 	}
 }
 
-func statsScraperFactoryFunc(podLister corev1listers.PodLister, usePassthroughLb bool, meshMode network.MeshCompatibilityMode) asmetrics.StatsScraperFactory {
+func statsScraperFactoryFunc(podLister corev1listers.PodLister, usePassthroughLb bool, meshMode netcfg.MeshCompatibilityMode) asmetrics.StatsScraperFactory {
 	return func(metric *autoscalingv1alpha1.Metric, logger *zap.SugaredLogger) (asmetrics.StatsScraper, error) {
 		if metric.Spec.ScrapeTarget == "" {
 			return nil, nil

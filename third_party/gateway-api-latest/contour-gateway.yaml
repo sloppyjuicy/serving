@@ -1,0 +1,198 @@
+# Copyright 2021 The Knative Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-gateway
+  namespace: knative-serving
+  labels:
+    app.kubernetes.io/component: net-gateway-api
+    app.kubernetes.io/name: knative-serving
+    serving.knative.dev/release: devel
+data:
+  external-gateways: |
+    - class: contour-external
+      gateway: contour-external/knative-external
+      service: contour-external/envoy-knative-external
+      supported-features:
+      - HTTPRouteRequestTimeout
+  # local-gateways defines the Gateway to be used for cluster local traffic
+  local-gateways: |
+    - class: contour-internal
+      gateway: contour-internal/knative-local
+      service: contour-internal/envoy-knative-local
+      supported-features:
+      - HTTPRouteRequestTimeout
+
+---
+# Copyright 2021 The Knative Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: contour-external
+---
+kind: GatewayClass
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: contour-external
+spec:
+  controllerName: projectcontour.io/gateway-controller
+  parametersRef:
+    kind: ContourDeployment
+    group: projectcontour.io
+    name: contour-external
+    namespace: contour-external
+---
+kind: ContourDeployment
+apiVersion: projectcontour.io/v1alpha1
+metadata:
+  name: contour-external
+  namespace: contour-external
+spec:
+  runtimeSettings:
+    enableExternalNameService: true
+    featureFlags:
+      - "useEndpointSlices"
+  envoy:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 1000m
+        memory: 1000Mi
+    workloadType: Deployment
+    deployment:
+      replicas: 2
+  contour:
+    disabledFeatures: [grpcroutes, backendtlspolicies]
+    deployment:
+      replicas: 1
+---
+kind: Gateway
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: knative-external
+  namespace: contour-external
+spec:
+  gatewayClassName: contour-external
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    # We've observed when adding and removing a listener on port 443 this
+    # causes the GKE LB to have downtime. By adding this tls listener
+    # we keep that LB port open.
+    - name: tls
+      port: 443
+      protocol: TLS
+      tls:
+        mode: Passthrough
+      allowedRoutes:
+        namespaces:
+          from: All
+
+---
+# Copyright 2021 The Knative Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: contour-internal
+---
+kind: GatewayClass
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: contour-internal
+spec:
+  controllerName: projectcontour.io/gateway-controller
+  parametersRef:
+    kind: ContourDeployment
+    group: projectcontour.io
+    name: contour-internal
+    namespace: contour-internal
+---
+kind: ContourDeployment
+apiVersion: projectcontour.io/v1alpha1
+metadata:
+  name: contour-internal
+  namespace: contour-internal
+spec:
+  runtimeSettings:
+    enableExternalNameService: true
+    featureFlags:
+      - "useEndpointSlices"
+  envoy:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 1000m
+        memory: 1000Mi
+    workloadType: Deployment
+    networkPublishing:
+      type: ClusterIPService
+    deployment:
+      replicas: 2
+  contour:
+    disabledFeatures: [grpcroutes, backendtlspolicies]
+    deployment:
+      replicas: 1
+---
+kind: Gateway
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: knative-local
+  namespace: contour-internal
+spec:
+  gatewayClassName: contour-internal
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+
+---

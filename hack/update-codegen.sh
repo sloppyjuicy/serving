@@ -60,35 +60,35 @@ ${REPO_ROOT_DIR}/hack/update-checksums.sh
 
 group "Kubernetes Codegen"
 
-# generate the code with:
-# --output-base    because this script should also be able to run inside the vendor dir of
-#                  k8s.io/kubernetes. The output-base is needed for the generators to output into the vendor dir
-#                  instead of the $GOPATH directly. For normal projects this can be dropped.
-${CODEGEN_PKG}/generate-groups.sh "deepcopy,client,informer,lister" \
-  knative.dev/serving/pkg/client knative.dev/serving/pkg/apis \
-  "serving:v1 serving:v1beta1 serving:v1alpha1 autoscaling:v1alpha1" \
-  --go-header-file "${boilerplate}"
+source "${CODEGEN_PKG}/kube_codegen.sh"
+
+kube::codegen::gen_client \
+  --boilerplate "${REPO_ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
+  --output-dir "${REPO_ROOT_DIR}/pkg/client" \
+  --output-pkg "knative.dev/serving/pkg/client" \
+  --with-watch \
+  "${REPO_ROOT_DIR}/pkg/apis"
 
 group "Knative Codegen"
 
 # Knative Injection
 ${KNATIVE_CODEGEN_PKG}/hack/generate-knative.sh "injection" \
   knative.dev/serving/pkg/client knative.dev/serving/pkg/apis \
-  "serving:v1 serving:v1beta1 serving:v1alpha1 autoscaling:v1alpha1" \
+  "serving:v1 serving:v1beta1 autoscaling:v1alpha1" \
   --go-header-file "${boilerplate}"
+
+# Knative Injection (for cert-manager)
+OUTPUT_PKG="knative.dev/serving/pkg/client/certmanager/injection" \
+${KNATIVE_CODEGEN_PKG}/hack/generate-knative.sh "injection" \
+  github.com/cert-manager/cert-manager/pkg/client github.com/cert-manager/cert-manager/pkg/apis "certmanager:v1 acme:v1" \
+  --disable-informer-init \
+  --go-header-file ${REPO_ROOT_DIR}/hack/boilerplate/boilerplate.go.txt
 
 group "Deepcopy Gen"
 
-# Depends on generate-groups.sh to install bin/deepcopy-gen
-${GOPATH}/bin/deepcopy-gen \
-  -O zz_generated.deepcopy \
-  --go-header-file "${boilerplate}" \
-  -i knative.dev/serving/pkg/apis/config \
-  -i knative.dev/serving/pkg/reconciler/route/config \
-  -i knative.dev/serving/pkg/autoscaler/config/autoscalerconfig \
-  -i knative.dev/serving/pkg/autoscaler/scaling \
-  -i knative.dev/serving/pkg/deployment \
-  -i knative.dev/serving/pkg/gc
+kube::codegen::gen_helpers \
+  --boilerplate "${REPO_ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
+  "${REPO_ROOT_DIR}/pkg"
 
 group "Generating API reference docs"
 

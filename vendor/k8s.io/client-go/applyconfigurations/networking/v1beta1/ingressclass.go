@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// IngressClassApplyConfiguration represents an declarative configuration of the IngressClass type for use
+// IngressClassApplyConfiguration represents a declarative configuration of the IngressClass type for use
 // with apply.
 type IngressClassApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -35,7 +35,7 @@ type IngressClassApplyConfiguration struct {
 	Spec                             *IngressClassSpecApplyConfiguration `json:"spec,omitempty"`
 }
 
-// IngressClass constructs an declarative configuration of the IngressClass type for use with
+// IngressClass constructs a declarative configuration of the IngressClass type for use with
 // apply.
 func IngressClass(name string) *IngressClassApplyConfiguration {
 	b := &IngressClassApplyConfiguration{}
@@ -48,7 +48,7 @@ func IngressClass(name string) *IngressClassApplyConfiguration {
 // ExtractIngressClass extracts the applied configuration owned by fieldManager from
 // ingressClass. If no managedFields are found in ingressClass for fieldManager, a
 // IngressClassApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // ingressClass must be a unmodified IngressClass API object that was retrieved from the Kubernetes API.
@@ -57,8 +57,19 @@ func IngressClass(name string) *IngressClassApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractIngressClass(ingressClass *networkingv1beta1.IngressClass, fieldManager string) (*IngressClassApplyConfiguration, error) {
+	return extractIngressClass(ingressClass, fieldManager, "")
+}
+
+// ExtractIngressClassStatus is the same as ExtractIngressClass except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractIngressClassStatus(ingressClass *networkingv1beta1.IngressClass, fieldManager string) (*IngressClassApplyConfiguration, error) {
+	return extractIngressClass(ingressClass, fieldManager, "status")
+}
+
+func extractIngressClass(ingressClass *networkingv1beta1.IngressClass, fieldManager string, subresource string) (*IngressClassApplyConfiguration, error) {
 	b := &IngressClassApplyConfiguration{}
-	err := managedfields.ExtractInto(ingressClass, internal.Parser().Type("io.k8s.api.networking.v1beta1.IngressClass"), fieldManager, b)
+	err := managedfields.ExtractInto(ingressClass, internal.Parser().Type("io.k8s.api.networking.v1beta1.IngressClass"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -109,15 +120,6 @@ func (b *IngressClassApplyConfiguration) WithGenerateName(value string) *Ingress
 func (b *IngressClassApplyConfiguration) WithNamespace(value string) *IngressClassApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *IngressClassApplyConfiguration) WithSelfLink(value string) *IngressClassApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -230,15 +232,6 @@ func (b *IngressClassApplyConfiguration) WithFinalizers(values ...string) *Ingre
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *IngressClassApplyConfiguration) WithClusterName(value string) *IngressClassApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *IngressClassApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -251,4 +244,10 @@ func (b *IngressClassApplyConfiguration) ensureObjectMetaApplyConfigurationExist
 func (b *IngressClassApplyConfiguration) WithSpec(value *IngressClassSpecApplyConfiguration) *IngressClassApplyConfiguration {
 	b.Spec = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *IngressClassApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

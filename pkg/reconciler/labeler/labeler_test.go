@@ -31,8 +31,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/clock"
 	clientgotesting "k8s.io/client-go/testing"
+	clocktest "k8s.io/utils/clock/testing"
 	routereconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1/route"
 
 	"knative.dev/pkg/configmap"
@@ -53,7 +53,7 @@ import (
 func TestV2Reconcile(t *testing.T) {
 	now := metav1.Now()
 	fakeTime := now.Time
-	clock := clock.NewFakePassiveClock(fakeTime)
+	clock := clocktest.NewFakePassiveClock(fakeTime)
 
 	table := TableTest{{
 		Name: "bad workqueue key",
@@ -370,8 +370,10 @@ func revTraffic(name string, latest bool) v1.TrafficTarget {
 
 func routeWithTraffic(namespace, name string, spec, status v1.TrafficTarget, opts ...RouteOption) *v1.Route {
 	return Route(namespace, name,
-		append([]RouteOption{WithSpecTraffic(spec), WithStatusTraffic(status), WithInitRouteConditions,
-			MarkTrafficAssigned, MarkCertificateReady, MarkIngressReady, WithRouteObservedGeneration}, opts...)...)
+		append([]RouteOption{
+			WithSpecTraffic(spec), WithStatusTraffic(status), WithInitRouteConditions,
+			MarkTrafficAssigned, MarkCertificateReady, MarkIngressReady, WithRouteObservedGeneration,
+		}, opts...)...)
 }
 
 func simpleRunLatest(namespace, name, config string, opts ...RouteOption) *v1.Route {

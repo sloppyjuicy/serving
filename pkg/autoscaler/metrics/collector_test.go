@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -27,8 +28,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/wait"
+	clocktest "k8s.io/utils/clock/testing"
 
 	. "knative.dev/pkg/logging/testing"
 	"knative.dev/serving/pkg/apis/autoscaling"
@@ -146,7 +147,7 @@ func TestMetricCollectorScraperMovingTime(t *testing.T) {
 	}
 	now := time.Now()
 	fc := fake.Clock{
-		FakeClock: clock.NewFakeClock(now),
+		FakeClock: clocktest.NewFakeClock(now),
 		TP:        mtp,
 	}
 	metricKey := types.NamespacedName{Namespace: defaultNamespace, Name: defaultName}
@@ -175,17 +176,17 @@ func TestMetricCollectorScraperMovingTime(t *testing.T) {
 	coll.CreateOrUpdate(&defaultMetric)
 
 	// Tick three times.  Time doesn't matter since we use the time on the Stat.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		mtp.Channel <- now
 	}
 	now = now.Add(time.Second)
 	fc.SetTime(now)
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		mtp.Channel <- now
 	}
 	var gotRPS, gotConcurrency, panicRPS, panicConcurrency float64
 	// Poll to see that the async loop completed.
-	wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	wait.PollUntilContextTimeout(context.Background(), 10*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 		gotConcurrency, panicConcurrency, _ = coll.StableAndPanicConcurrency(metricKey, now)
 		gotRPS, panicRPS, _ = coll.StableAndPanicRPS(metricKey, now)
 		return gotConcurrency == wantConcurrency &&
@@ -222,7 +223,7 @@ func TestMetricCollectorScraper(t *testing.T) {
 	}
 	now := time.Now()
 	fc := fake.Clock{
-		FakeClock: clock.NewFakeClock(now),
+		FakeClock: clocktest.NewFakeClock(now),
 		TP:        mtp,
 	}
 	metricKey := types.NamespacedName{Namespace: defaultNamespace, Name: defaultName}
@@ -251,12 +252,12 @@ func TestMetricCollectorScraper(t *testing.T) {
 	coll.CreateOrUpdate(&defaultMetric)
 
 	// Tick three times.  Time doesn't matter since we use the time on the Stat.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		mtp.Channel <- now
 	}
 	var gotRPS, gotConcurrency, panicRPS, panicConcurrency float64
 	// Poll to see that the async loop completed.
-	wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	wait.PollUntilContextTimeout(context.Background(), 10*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 		gotConcurrency, panicConcurrency, _ = coll.StableAndPanicConcurrency(metricKey, now)
 		gotRPS, panicRPS, _ = coll.StableAndPanicRPS(metricKey, now)
 		return gotConcurrency == wantConcurrency &&
@@ -289,7 +290,7 @@ func TestMetricCollectorScraper(t *testing.T) {
 	mtp.Channel <- now
 
 	// Wait for async loop to finish.
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), 10*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 		gotConcurrency, _, _ = coll.StableAndPanicConcurrency(metricKey, now.Add(defaultMetric.Spec.StableWindow).Add(-5*time.Second))
 		gotRPS, _, _ = coll.StableAndPanicRPS(metricKey, now.Add(defaultMetric.Spec.StableWindow).Add(-5*time.Second))
 		return gotConcurrency == reportConcurrency*5 && gotRPS == reportRPS*5, nil
@@ -321,7 +322,7 @@ func TestMetricCollectorNoScraper(t *testing.T) {
 	}
 	now := time.Now()
 	fc := fake.Clock{
-		FakeClock: clock.NewFakeClock(now),
+		FakeClock: clocktest.NewFakeClock(now),
 		TP:        mtp,
 	}
 	metricKey := types.NamespacedName{Namespace: defaultNamespace, Name: defaultName}
@@ -340,7 +341,7 @@ func TestMetricCollectorNoScraper(t *testing.T) {
 	noTargetMetric.Spec.ScrapeTarget = ""
 	coll.CreateOrUpdate(&noTargetMetric)
 	// Tick three times.  Time doesn't matter since we use the time on the Stat.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		mtp.Channel <- now
 		now = now.Add(time.Second)
 		fc.SetTime(now)
@@ -452,7 +453,7 @@ func TestMetricCollectorRecord(t *testing.T) {
 		Channel: make(chan time.Time),
 	}
 	fc := fake.Clock{
-		FakeClock: clock.NewFakeClock(now),
+		FakeClock: clocktest.NewFakeClock(now),
 		TP:        mtp,
 	}
 	coll.clock = fc
@@ -560,7 +561,7 @@ func TestMetricCollectorError(t *testing.T) {
 			}
 			now := time.Now()
 			fc := fake.Clock{
-				FakeClock: clock.NewFakeClock(now),
+				FakeClock: clocktest.NewFakeClock(now),
 				TP:        mtp,
 			}
 			coll := NewMetricCollector(factory, logger)
@@ -619,13 +620,13 @@ func TestMetricCollectorAggregate(t *testing.T) {
 		rpsPanicBuckets:         aggregation.NewTimedFloat64Buckets(m.Spec.PanicWindow, config.BucketSize),
 	}
 	now := time.Now()
-	for i := time.Duration(0); i < 10; i++ {
+	for i := range 10 {
 		stat := Stat{
 			PodName:                   "testPod",
 			AverageConcurrentRequests: float64(i + 5),
 			RequestCount:              float64(i + 5),
 		}
-		c.record(now.Add(i*time.Second), stat)
+		c.record(now.Add(time.Duration(i)*time.Second), stat)
 	}
 
 	now = now.Add(9 * time.Second)

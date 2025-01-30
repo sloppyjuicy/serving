@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// EndpointsApplyConfiguration represents an declarative configuration of the Endpoints type for use
+// EndpointsApplyConfiguration represents a declarative configuration of the Endpoints type for use
 // with apply.
 type EndpointsApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -35,7 +35,7 @@ type EndpointsApplyConfiguration struct {
 	Subsets                          []EndpointSubsetApplyConfiguration `json:"subsets,omitempty"`
 }
 
-// Endpoints constructs an declarative configuration of the Endpoints type for use with
+// Endpoints constructs a declarative configuration of the Endpoints type for use with
 // apply.
 func Endpoints(name, namespace string) *EndpointsApplyConfiguration {
 	b := &EndpointsApplyConfiguration{}
@@ -49,7 +49,7 @@ func Endpoints(name, namespace string) *EndpointsApplyConfiguration {
 // ExtractEndpoints extracts the applied configuration owned by fieldManager from
 // endpoints. If no managedFields are found in endpoints for fieldManager, a
 // EndpointsApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // endpoints must be a unmodified Endpoints API object that was retrieved from the Kubernetes API.
@@ -58,8 +58,19 @@ func Endpoints(name, namespace string) *EndpointsApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractEndpoints(endpoints *apicorev1.Endpoints, fieldManager string) (*EndpointsApplyConfiguration, error) {
+	return extractEndpoints(endpoints, fieldManager, "")
+}
+
+// ExtractEndpointsStatus is the same as ExtractEndpoints except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractEndpointsStatus(endpoints *apicorev1.Endpoints, fieldManager string) (*EndpointsApplyConfiguration, error) {
+	return extractEndpoints(endpoints, fieldManager, "status")
+}
+
+func extractEndpoints(endpoints *apicorev1.Endpoints, fieldManager string, subresource string) (*EndpointsApplyConfiguration, error) {
 	b := &EndpointsApplyConfiguration{}
-	err := managedfields.ExtractInto(endpoints, internal.Parser().Type("io.k8s.api.core.v1.Endpoints"), fieldManager, b)
+	err := managedfields.ExtractInto(endpoints, internal.Parser().Type("io.k8s.api.core.v1.Endpoints"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -111,15 +122,6 @@ func (b *EndpointsApplyConfiguration) WithGenerateName(value string) *EndpointsA
 func (b *EndpointsApplyConfiguration) WithNamespace(value string) *EndpointsApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *EndpointsApplyConfiguration) WithSelfLink(value string) *EndpointsApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -232,15 +234,6 @@ func (b *EndpointsApplyConfiguration) WithFinalizers(values ...string) *Endpoint
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *EndpointsApplyConfiguration) WithClusterName(value string) *EndpointsApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *EndpointsApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -258,4 +251,10 @@ func (b *EndpointsApplyConfiguration) WithSubsets(values ...*EndpointSubsetApply
 		b.Subsets = append(b.Subsets, *values[i])
 	}
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *EndpointsApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

@@ -21,6 +21,8 @@ import (
 	"fmt"
 
 	"go.uber.org/zap"
+	"knative.dev/pkg/tracker"
+	networkingaccessor "knative.dev/serving/pkg/reconciler/accessor/networking"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,11 +30,15 @@ import (
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	networkingApi "knative.dev/networking/pkg/apis/networking"
+	"knative.dev/networking/pkg/certificates"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/pkg/kmp"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
+	"knative.dev/serving/pkg/networking"
+	"knative.dev/serving/pkg/reconciler/revision/config"
 	"knative.dev/serving/pkg/reconciler/revision/resources"
 	resourcenames "knative.dev/serving/pkg/reconciler/revision/resources/names"
 )
@@ -47,39 +53,33 @@ func (c *Reconciler) reconcileDeployment(ctx context.Context, rev *v1.Revision) 
 		// Deployment does not exist. Create it.
 		rev.Status.MarkResourcesAvailableUnknown(v1.ReasonDeploying, "")
 		rev.Status.MarkContainerHealthyUnknown(v1.ReasonDeploying, "")
-		deployment, err = c.createDeployment(ctx, rev)
-		if err != nil {
+		if _, err = c.createDeployment(ctx, rev); err != nil {
 			return fmt.Errorf("failed to create deployment %q: %w", deploymentName, err)
 		}
 		logger.Infof("Created deployment %q", deploymentName)
+		return nil
 	} else if err != nil {
 		return fmt.Errorf("failed to get deployment %q: %w", deploymentName, err)
 	} else if !metav1.IsControlledBy(deployment, rev) {
 		// Surface an error in the revision's status, and return an error.
 		rev.Status.MarkResourcesAvailableFalse(v1.ReasonNotOwned, v1.ResourceNotOwnedMessage("Deployment", deploymentName))
 		return fmt.Errorf("revision: %q does not own Deployment: %q", rev.Name, deploymentName)
-	} else {
-		// The deployment exists, but make sure that it has the shape that we expect.
-		deployment, err = c.checkAndUpdateDeployment(ctx, rev, deployment)
-		if err != nil {
-			return fmt.Errorf("failed to update deployment %q: %w", deploymentName, err)
-		}
-
-		// Now that we have a Deployment, determine whether there is any relevant
-		// status to surface in the Revision.
-		//
-		// TODO(jonjohnsonjr): Should we check Generation != ObservedGeneration?
-		// The autoscaler mutates the deployment pretty often, which would cause us
-		// to flip back and forth between Ready and Unknown every time we scale up
-		// or down.
-		if !rev.Status.IsActivationRequired() {
-			rev.Status.PropagateDeploymentStatus(&deployment.Status)
-		}
 	}
+
+	// The deployment exists, but make sure that it has the shape that we expect.
+	deployment, err = c.checkAndUpdateDeployment(ctx, rev, deployment)
+	if err != nil {
+		return fmt.Errorf("failed to update deployment %q: %w", deploymentName, err)
+	}
+
+	rev.Status.PropagateDeploymentStatus(&deployment.Status)
 
 	// If a container keeps crashing (no active pods in the deployment although we want some)
 	if *deployment.Spec.Replicas > 0 && deployment.Status.AvailableReplicas == 0 {
-		pods, err := c.kubeclient.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(deployment.Spec.Selector)})
+		pods, err := c.kubeclient.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
+			LabelSelector: metav1.FormatLabelSelector(deployment.Spec.Selector),
+			Limit:         1,
+		})
 		if err != nil {
 			logger.Errorw("Error getting pods", zap.Error(err))
 			return nil
@@ -98,18 +98,30 @@ func (c *Reconciler) reconcileDeployment(ctx context.Context, rev *v1.Revision) 
 			}
 
 			for _, status := range pod.Status.ContainerStatuses {
-				if status.Name == rev.Spec.GetContainer().Name {
+				if status.Name != resources.QueueContainerName {
 					if t := status.LastTerminationState.Terminated; t != nil {
 						logger.Infof("marking exiting with: %d/%s", t.ExitCode, t.Message)
-						rev.Status.MarkContainerHealthyFalse(v1.ExitCodeReason(t.ExitCode), v1.RevisionContainerExitingMessage(t.Message))
+						if t.ExitCode == 0 && t.Message == "" {
+							// In cases where there is no error message, we should still provide some exit message in the status
+							rev.Status.MarkContainerHealthyFalse(v1.ExitCodeReason(t.ExitCode),
+								v1.RevisionContainerExitingMessage("container exited with no error"))
+							break
+						} else {
+							rev.Status.MarkContainerHealthyFalse(v1.ExitCodeReason(t.ExitCode), v1.RevisionContainerExitingMessage(t.Message))
+							break
+						}
 					} else if w := status.State.Waiting; w != nil && hasDeploymentTimedOut(deployment) {
 						logger.Infof("marking resources unavailable with: %s: %s", w.Reason, w.Message)
 						rev.Status.MarkResourcesAvailableFalse(w.Reason, w.Message)
+						break
 					}
-					break
 				}
 			}
 		}
+	}
+
+	if deployment.Status.ReadyReplicas > 0 {
+		rev.Status.MarkContainerHealthyTrue()
 	}
 
 	return nil
@@ -137,6 +149,13 @@ func (c *Reconciler) reconcileImageCache(ctx context.Context, rev *v1.Revision) 
 
 func (c *Reconciler) reconcilePA(ctx context.Context, rev *v1.Revision) error {
 	ns := rev.Namespace
+
+	deploymentName := resourcenames.Deployment(rev)
+	deployment, err := c.deploymentLister.Deployments(ns).Get(deploymentName)
+	if err != nil {
+		return err
+	}
+
 	paName := resourcenames.PA(rev)
 	logger := logging.FromContext(ctx)
 	logger.Info("Reconciling PA: ", paName)
@@ -144,7 +163,7 @@ func (c *Reconciler) reconcilePA(ctx context.Context, rev *v1.Revision) error {
 	pa, err := c.podAutoscalerLister.PodAutoscalers(ns).Get(paName)
 	if apierrs.IsNotFound(err) {
 		// PA does not exist. Create it.
-		pa, err = c.createPA(ctx, rev)
+		pa, err = c.createPA(ctx, rev, deployment)
 		if err != nil {
 			return fmt.Errorf("failed to create PA %q: %w", paName, err)
 		}
@@ -159,7 +178,7 @@ func (c *Reconciler) reconcilePA(ctx context.Context, rev *v1.Revision) error {
 
 	// Perhaps tha PA spec changed underneath ourselves?
 	// We no longer require immutability, so need to reconcile PA each time.
-	tmpl := resources.MakePA(rev)
+	tmpl := resources.MakePA(rev, deployment)
 	logger.Debugf("Desired PASpec: %#v", tmpl.Spec)
 	if !equality.Semantic.DeepEqual(tmpl.Spec, pa.Spec) {
 		diff, _ := kmp.SafeDiff(tmpl.Spec, pa.Spec) // Can't realistically fail on PASpec.
@@ -190,4 +209,59 @@ func hasDeploymentTimedOut(deployment *appsv1.Deployment) bool {
 		}
 	}
 	return false
+}
+
+func (c *Reconciler) reconcileQueueProxyCertificate(ctx context.Context, rev *v1.Revision) error {
+	ns := rev.Namespace
+	logger := logging.FromContext(ctx)
+	logger.Infof("Reconciling queue-proxy Knative Certificate for system-internal-tls: %s/%s", ns, networking.ServingCertName)
+
+	certClass := config.FromContext(ctx).Network.DefaultCertificateClass
+	if class := networkingApi.GetCertificateClass(rev.Annotations); class != "" {
+		certClass = class
+	}
+
+	// As all Knative services in the same namespace share one QP-certificate, so the owning resource
+	// is the namespace, not the revision. This results in the first created revision to trigger
+	// the creation of the Certificate, each revision update (potentially) refreshes the certificate and
+	// the deletion of the Certificate is bound to the namespace deletion.
+	owningNs, err := c.kubeclient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	desiredCert := resources.MakeQueueProxyCertificate(owningNs, certClass)
+	cert, err := networkingaccessor.ReconcileCertificate(ctx, owningNs, desiredCert, c)
+	if err != nil {
+		return fmt.Errorf("failed to reconcile Knative certificate %s/%s: %w", ns, networking.ServingCertName, err)
+	}
+
+	// Verify the secret is created and has been added the certificates
+	secret, err := c.kubeclient.CoreV1().Secrets(ns).Get(ctx, networking.ServingCertName, metav1.GetOptions{})
+	if apierrs.IsNotFound(err) {
+		return fmt.Errorf("secret %s/%s is not ready yet: secret could not be found", ns, networking.ServingCertName)
+	} else if err != nil {
+		return fmt.Errorf("secret %s/%s is not ready yet: %w", ns, networking.ServingCertName, err)
+	}
+
+	if _, ok := secret.Data[certificates.CertName]; !ok {
+		return fmt.Errorf("certificate in secret %s/%s is not ready yet: public cert not found", ns, networking.ServingCertName)
+	}
+	if _, ok := secret.Data[certificates.PrivateKeyName]; !ok {
+		return fmt.Errorf("certificate in secret %s/%s is not ready yet: private key not found", ns, networking.ServingCertName)
+	}
+
+	// Tell our trackers to reconcile Revisions when the KnativeCertificate changes
+	gvk := cert.GetGroupVersionKind()
+	apiVersion, kind := gvk.ToAPIVersionAndKind()
+	if err := c.tracker.TrackReference(tracker.Reference{
+		APIVersion: apiVersion,
+		Kind:       kind,
+		Namespace:  cert.GetNamespace(),
+		Name:       cert.GetName(),
+	}, rev); err != nil {
+		return err
+	}
+
+	return nil
 }

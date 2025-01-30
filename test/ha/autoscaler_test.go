@@ -47,7 +47,14 @@ const (
 )
 
 func TestAutoscalerHA(t *testing.T) {
-	ctx := e2e.SetupSvc(t, autoscaling.KPA, autoscaling.RPS, target, targetUtilization,
+	ctx := e2e.SetupSvc(t,
+		&e2e.AutoscalerOptions{
+			Class:             autoscaling.KPA,
+			Metric:            autoscaling.RPS,
+			Target:            target,
+			TargetUtilization: targetUtilization,
+		},
+		test.Options{},
 		rtesting.WithConfigAnnotations(map[string]string{
 			autoscaling.WindowAnnotationKey:    autoscaling.WindowMin.String(), // Make sure we scale to zero quickly.
 			autoscaling.TargetBurstCapacityKey: "-1",
@@ -63,7 +70,7 @@ func TestAutoscalerHA(t *testing.T) {
 		t.Fatalf("Deployment %s not scaled to %d: %v", autoscalerDeploymentName, test.ServingFlags.Replicas, err)
 	}
 
-	leaders, err := pkgHa.WaitForNewLeaders(context.Background(), t, clients.KubeClient, autoscalerDeploymentName, system.Namespace(), sets.NewString(), test.ServingFlags.Buckets)
+	leaders, err := pkgHa.WaitForNewLeaders(context.Background(), t, clients.KubeClient, autoscalerDeploymentName, system.Namespace(), sets.New[string](), test.ServingFlags.Buckets)
 	if err != nil {
 		t.Fatal("Failed to get leader:", err)
 	}
@@ -74,7 +81,7 @@ func TestAutoscalerHA(t *testing.T) {
 		t.Fatal("Failed to scale to zero:", err)
 	}
 
-	for _, leader := range leaders.List() {
+	for _, leader := range sets.List(leaders) {
 		if err := clients.KubeClient.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
 			metav1.DeleteOptions{}); err != nil && !apierrs.IsNotFound(err) {
 			t.Fatalf("Failed to delete pod %s: %v", leader, err)

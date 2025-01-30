@@ -35,6 +35,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -73,26 +74,26 @@ func dial(ctx *TestContext, host, domain string) (*grpc.ClientConn, error) {
 	if !hasPort(host) {
 		host = net.JoinHostPort(host, defaultPort)
 	}
-	if !hasPort(domain) {
-		domain = net.JoinHostPort(domain, defaultPort)
-	}
-
-	secureOpt := grpc.WithInsecure()
-	if test.ServingFlags.HTTPS {
-		tlsConfig := test.TLSClientConfig(context.Background(), ctx.t.Logf, ctx.clients)
-		// Set ServerName for pseudo hostname with TLS.
+	if hasPort(domain) {
 		var err error
-		tlsConfig.ServerName, _, err = net.SplitHostPort(domain)
+		domain, _, err = net.SplitHostPort(domain)
 		if err != nil {
 			return nil, err
 		}
-		secureOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))
 	}
 
-	return grpc.Dial(
+	creds := insecure.NewCredentials()
+	if test.ServingFlags.HTTPS {
+		tlsConfig := test.TLSClientConfig(context.Background(), ctx.t.Logf, ctx.clients)
+		// Set ServerName for pseudo hostname with TLS.
+		tlsConfig.ServerName = domain
+		creds = credentials.NewTLS(tlsConfig)
+	}
+
+	return grpc.NewClient(
 		host,
 		grpc.WithAuthority(domain),
-		secureOpt,
+		grpc.WithTransportCredentials(creds),
 		// Retrying DNS errors to avoid .sslip.io issues.
 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 	)
@@ -115,7 +116,6 @@ func autoscaleTest(ctx *TestContext, host, domain string) {
 	ctx.t.Helper()
 	ctx.t.Logf("Connecting to grpc-ping using host %q and authority %q", host, domain)
 
-	ctx.targetUtilization = targetUtilization
 	assertGRPCAutoscaleUpToNumPods(ctx, 1, 2, 60*time.Second, host, domain)
 	assertScaleDown(ctx)
 	assertGRPCAutoscaleUpToNumPods(ctx, 0, 2, 60*time.Second, host, domain)
@@ -138,8 +138,6 @@ func loadBalancingTest(ctx *TestContext, host, domain string) {
 		timer       = time.Tick(1 * time.Second)
 	)
 
-	ctx.targetUtilization = targetUtilization
-
 	countKeys := func() int {
 		count := 0
 		uniqueHosts.Range(func(k, v interface{}) bool {
@@ -149,7 +147,7 @@ func loadBalancingTest(ctx *TestContext, host, domain string) {
 		return count
 	}
 
-	for i := 0; i < wantHosts; i++ {
+	for range wantHosts {
 		grp.Go(func() error {
 			for {
 				select {
@@ -199,8 +197,7 @@ func loadBalancingTest(ctx *TestContext, host, domain string) {
 func generateGRPCTraffic(ctx *TestContext, concurrentRequests int, host, domain string, stopChan chan struct{}) error {
 	var grp errgroup.Group
 
-	for i := 0; i < concurrentRequests; i++ {
-		i := i
+	for i := range concurrentRequests {
 		grp.Go(func() error {
 			for j := 0; ; j++ {
 				select {
@@ -209,7 +206,6 @@ func generateGRPCTraffic(ctx *TestContext, concurrentRequests int, host, domain 
 				default:
 					want := fmt.Sprintf("Hello! stream:%d request: %d", i, j)
 					got, err := pingGRPC(ctx, host, domain, want)
-
 					if err != nil {
 						return fmt.Errorf("ping gRPC error: %w", err)
 					}
@@ -250,14 +246,14 @@ func assertGRPCAutoscaleUpToNumPods(ctx *TestContext, curPods, targetPods float6
 	// Relax the bounds to reduce the flakiness caused by sampling in the autoscaling algorithm.
 	// Also adjust the values by the target utilization values.
 
-	minPods := math.Floor(curPods/ctx.targetUtilization) - 1
-	maxPods := math.Ceil(targetPods/ctx.targetUtilization) + 1
+	minPods := math.Floor(curPods/ctx.autoscaler.TargetUtilization) - 1
+	maxPods := math.Ceil(targetPods/ctx.autoscaler.TargetUtilization) + 1
 
 	stopChan := make(chan struct{})
 	var grp errgroup.Group
 
 	grp.Go(func() error {
-		return generateGRPCTraffic(ctx, int(targetPods*grpcContainerConcurrency), host, domain, stopChan)
+		return generateGRPCTraffic(ctx, int(targetPods*float64(ctx.autoscaler.Target)), host, domain, stopChan)
 	})
 
 	grp.Go(func() error {
@@ -291,7 +287,7 @@ func streamTest(tc *TestContext, host, domain string) {
 	}
 
 	const count = 3
-	for i := 0; i < count; i++ {
+	for i := range count {
 		tc.t.Logf("Sending stream %d of %d", i+1, count)
 
 		want := "This is a short message!"
@@ -335,7 +331,7 @@ func testGRPC(t *testing.T, f grpcTest, fopts ...rtesting.ServiceOption) {
 	t.Log("Creating service for grpc-ping")
 
 	svcName := test.ObjectNameForTest(t)
-	// Long name hits this issue https://github.com/knative-sandbox/net-certmanager/issues/214
+	// Long name hits this issue https://github.com/knative-extensions/net-certmanager/issues/214
 	if t.Name() == "TestGRPCStreamingPingViaActivator" {
 		svcName = test.AppendRandomString("grpc-streaming-pig-act")
 	}
@@ -382,7 +378,6 @@ func testGRPC(t *testing.T, f grpcTest, fopts ...rtesting.ServiceOption) {
 
 	f(&TestContext{
 		t:         t,
-		logf:      t.Logf,
 		clients:   clients,
 		names:     names,
 		resources: resources,
@@ -426,14 +421,18 @@ func TestGRPCStreamingPingViaActivator(t *testing.T) {
 }
 
 func TestGRPCAutoscaleUpDownUp(t *testing.T) {
+	aOpts := &AutoscalerOptions{
+		TargetUtilization: targetUtilization,
+		Target:            grpcContainerConcurrency,
+	}
 	testGRPC(t,
 		func(ctx *TestContext, host, domain string) {
+			ctx.autoscaler = aOpts
 			autoscaleTest(ctx, host, domain)
-
 		},
 		rtesting.WithConfigAnnotations(map[string]string{
-			autoscaling.TargetUtilizationPercentageKey: toPercentageString(targetUtilization),
-			autoscaling.TargetAnnotationKey:            strconv.Itoa(grpcContainerConcurrency),
+			autoscaling.TargetUtilizationPercentageKey: toPercentageString(aOpts.TargetUtilization),
+			autoscaling.TargetAnnotationKey:            strconv.Itoa(aOpts.Target),
 			autoscaling.TargetBurstCapacityKey:         "-1",
 			autoscaling.WindowAnnotationKey:            "10s",
 		}),
@@ -445,13 +444,18 @@ func TestGRPCAutoscaleUpDownUp(t *testing.T) {
 }
 
 func TestGRPCLoadBalancing(t *testing.T) {
+	aOpts := &AutoscalerOptions{
+		TargetUtilization: targetUtilization,
+		Target:            grpcContainerConcurrency,
+	}
 	testGRPC(t,
 		func(ctx *TestContext, host, domain string) {
+			ctx.autoscaler = aOpts
 			loadBalancingTest(ctx, host, domain)
 		},
 		rtesting.WithConfigAnnotations(map[string]string{
-			autoscaling.TargetUtilizationPercentageKey: toPercentageString(targetUtilization),
-			autoscaling.TargetAnnotationKey:            strconv.Itoa(grpcContainerConcurrency),
+			autoscaling.TargetUtilizationPercentageKey: toPercentageString(aOpts.TargetUtilization),
+			autoscaling.TargetAnnotationKey:            strconv.Itoa(aOpts.Target),
 			autoscaling.MinScaleAnnotationKey:          strconv.Itoa(grpcMinScale),
 			autoscaling.TargetBurstCapacityKey:         "-1",
 		}),

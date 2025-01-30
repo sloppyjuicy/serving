@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -34,11 +35,14 @@ import (
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	"knative.dev/pkg/injection"
 	"knative.dev/serving/pkg/activator"
+	"knative.dev/serving/pkg/http/handler"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	network "knative.dev/networking/pkg"
+	netcfg "knative.dev/networking/pkg/config"
+	netprobe "knative.dev/networking/pkg/http/probe"
 	"knative.dev/pkg/configmap"
 	configmapinformer "knative.dev/pkg/configmap/informer"
 	"knative.dev/pkg/controller"
@@ -54,9 +58,11 @@ import (
 	tracingconfig "knative.dev/pkg/tracing/config"
 	"knative.dev/pkg/version"
 	"knative.dev/pkg/websocket"
+	"knative.dev/serving/pkg/activator/certificate"
 	activatorconfig "knative.dev/serving/pkg/activator/config"
 	activatorhandler "knative.dev/serving/pkg/activator/handler"
 	activatornet "knative.dev/serving/pkg/activator/net"
+	apiconfig "knative.dev/serving/pkg/apis/config"
 	asmetrics "knative.dev/serving/pkg/autoscaler/metrics"
 	pkghttp "knative.dev/serving/pkg/http"
 	"knative.dev/serving/pkg/logging"
@@ -105,7 +111,7 @@ func main() {
 
 	// We sometimes startup faster than we can reach kube-api. Poll on failure to prevent us terminating
 	var err error
-	if perr := wait.PollImmediate(time.Second, 60*time.Second, func() (bool, error) {
+	if perr := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true, func(context.Context) (bool, error) {
 		if err = version.CheckMinimumVersion(kubeClient.Discovery()); err != nil {
 			log.Print("Failed to get k8s version ", err)
 		}
@@ -143,7 +149,7 @@ func main() {
 
 	// Fetch networking configuration to determine whether EnableMeshPodAddressability
 	// is enabled or not.
-	networkCM, err := kubeclient.Get(ctx).CoreV1().ConfigMaps(system.Namespace()).Get(ctx, network.ConfigName, metav1.GetOptions{})
+	networkCM, err := kubeclient.Get(ctx).CoreV1().ConfigMaps(system.Namespace()).Get(ctx, netcfg.ConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		logger.Fatalw("Failed to fetch network config", zap.Error(err))
 	}
@@ -152,11 +158,29 @@ func main() {
 		logger.Fatalw("Failed to construct network config", zap.Error(err))
 	}
 
+	// Enable TLS for connections to queue-proxy when system-internal-tls is enabled.
+	tlsEnabled := networkConfig.SystemInternalTLSEnabled()
+
+	var certCache *certificate.CertCache
+
+	// Enable TLS client when queue-proxy-ca is specified.
+	// At this moment activator with TLS does not disable HTTP.
+	// See also https://github.com/knative/serving/issues/12808.
+	if tlsEnabled {
+		logger.Info("Knative system-internal-tls is enabled")
+		certCache, err = certificate.NewCertCache(ctx)
+		if err != nil {
+			logger.Fatalw("Failed to create certificate cache", zap.Error(err))
+		}
+		transport = pkgnet.NewProxyAutoTLSTransport(env.MaxIdleProxyConns, env.MaxIdleProxyConnsPerHost, certCache.TLSContext())
+	}
+
 	// Start throttler.
 	throttler := activatornet.NewThrottler(ctx, env.PodIP)
 	go throttler.Run(ctx, transport, networkConfig.EnableMeshPodAddressability, networkConfig.MeshCompatibilityMode)
 
 	oct := tracing.NewOpenCensusTracer(tracing.WithExporterFull(networking.ActivatorServiceName, env.PodIP, logger))
+	defer oct.Shutdown(context.Background())
 
 	tracerUpdater := configmap.TypeFilter(&tracingconfig.Config{})(func(name string, value interface{}) {
 		cfg := value.(*tracingconfig.Config)
@@ -187,7 +211,23 @@ func main() {
 
 	// Create activation handler chain
 	// Note: innermost handlers are specified first, ie. the last handler in the chain will be executed first
-	ah := activatorhandler.New(ctx, throttler, transport, networkConfig.EnableMeshPodAddressability, logger)
+	ah := activatorhandler.New(ctx, throttler, transport, networkConfig.EnableMeshPodAddressability, logger, tlsEnabled)
+	ah = handler.NewTimeoutHandler(ah, "activator request timeout", func(r *http.Request) (time.Duration, time.Duration, time.Duration) {
+		if rev := activatorhandler.RevisionFrom(r.Context()); rev != nil {
+			responseStartTimeout := 0 * time.Second
+			if rev.Spec.ResponseStartTimeoutSeconds != nil {
+				responseStartTimeout = time.Duration(*rev.Spec.ResponseStartTimeoutSeconds) * time.Second
+			}
+			idleTimeout := 0 * time.Second
+			if rev.Spec.IdleTimeoutSeconds != nil {
+				idleTimeout = time.Duration(*rev.Spec.IdleTimeoutSeconds) * time.Second
+			}
+			return time.Duration(*rev.Spec.TimeoutSeconds) * time.Second, responseStartTimeout, idleTimeout
+		}
+		return apiconfig.DefaultRevisionTimeoutSeconds * time.Second,
+			apiconfig.DefaultRevisionResponseStartTimeoutSeconds * time.Second,
+			apiconfig.DefaultRevisionIdleTimeoutSeconds * time.Second
+	})
 	ah = concurrencyReporter.Handler(ah)
 	ah = activatorhandler.NewTracingHandler(ah)
 	reqLogHandler, err := pkghttp.NewRequestLogHandler(ah, logging.NewSyncFileWriter(os.Stdout), "",
@@ -200,14 +240,15 @@ func main() {
 	// NOTE: MetricHandler is being used as the outermost handler of the meaty bits. We're not interested in measuring
 	// the healthchecks or probes.
 	ah = activatorhandler.NewMetricHandler(env.PodName, ah)
+	// We need the context handler to run first so ctx gets the revision info.
+	ah = activatorhandler.WrapActivatorHandlerWithFullDuplex(ah, logger)
 	ah = activatorhandler.NewContextHandler(ctx, ah, configStore)
 
 	// Network probe handlers.
 	ah = &activatorhandler.ProbeHandler{NextHandler: ah}
-	ah = network.NewProbeHandler(ah)
-
+	ah = netprobe.NewHandler(ah)
 	// Set up our health check based on the health of stat sink and environmental factors.
-	sigCtx, sigCancel := context.WithCancel(context.Background())
+	sigCtx := signals.NewContext()
 	hc := newHealthCheck(sigCtx, logger, statSink)
 	ah = &activatorhandler.HealthHandler{HealthCheck: hc, NextHandler: ah, Logger: logger}
 
@@ -241,14 +282,27 @@ func main() {
 		}(name, server)
 	}
 
-	sigCh := signals.SetupSignalHandler()
+	// Enable TLS server when system-internal-tls is specified.
+	// At this moment activator with TLS does not disable HTTP.
+	// See also https://github.com/knative/serving/issues/12808.
+	if tlsEnabled {
+		name, server := "https", pkgnet.NewServer(":"+strconv.Itoa(networking.BackendHTTPSPort), ah)
+		go func(name string, s *http.Server) {
+			s.TLSConfig = &tls.Config{
+				MinVersion:     tls.VersionTLS13,
+				GetCertificate: certCache.GetCertificate,
+			}
+			// Don't forward ErrServerClosed as that indicates we're already shutting down.
+			if err := s.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("%s server failed: %w", name, err)
+			}
+		}(name, server)
+	}
 
 	// Wait for the signal to drain.
 	select {
-	case <-sigCh:
+	case <-sigCtx.Done():
 		logger.Info("Received SIGTERM")
-		// Send a signal to let readiness probes start failing.
-		sigCancel()
 	case err := <-errCh:
 		logger.Errorw("Failed to run HTTP server", zap.Error(err))
 	}

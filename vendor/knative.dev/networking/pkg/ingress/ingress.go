@@ -18,13 +18,14 @@ package ingress
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
-	net "knative.dev/networking/pkg"
 	"knative.dev/networking/pkg/apis/networking/v1alpha1"
+	"knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/network"
 )
 
@@ -46,7 +47,7 @@ func InsertProbe(ing *v1alpha1.Ingress) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to compute the hash of the Ingress: %w", err)
 	}
-	hash := fmt.Sprintf("%x", bytes)
+	hash := hex.EncodeToString(bytes[:])
 
 	for _, rule := range ing.Spec.Rules {
 		if rule.HTTP == nil {
@@ -61,8 +62,8 @@ func InsertProbe(ing *v1alpha1.Ingress) (string, error) {
 			if elt.Headers == nil {
 				elt.Headers = make(map[string]v1alpha1.HeaderMatch, 1)
 			}
-			elt.Headers[net.HashHeaderName] = v1alpha1.HeaderMatch{Exact: net.HashHeaderValue}
-			elt.AppendHeaders[net.HashHeaderName] = hash
+			elt.Headers[header.HashKey] = v1alpha1.HeaderMatch{Exact: header.HashValueOverride}
+			elt.AppendHeaders[header.HashKey] = hash
 			probePaths = append(probePaths, *elt)
 		}
 		rule.HTTP.Paths = append(probePaths, rule.HTTP.Paths...)
@@ -73,13 +74,13 @@ func InsertProbe(ing *v1alpha1.Ingress) (string, error) {
 
 // HostsPerVisibility takes an Ingress and a map from visibility levels to a set of string keys,
 // it then returns a map from that key space to the hosts under that visibility.
-func HostsPerVisibility(ing *v1alpha1.Ingress, visibilityToKey map[v1alpha1.IngressVisibility]sets.String) map[string]sets.String {
-	output := make(map[string]sets.String, 2) // We currently have public and internal.
+func HostsPerVisibility(ing *v1alpha1.Ingress, visibilityToKey map[v1alpha1.IngressVisibility]sets.Set[string]) map[string]sets.Set[string] {
+	output := make(map[string]sets.Set[string], 2) // We currently have public and internal.
 	for _, rule := range ing.Spec.Rules {
-		for host := range ExpandedHosts(sets.NewString(rule.Hosts...)) {
+		for host := range ExpandedHosts(sets.New(rule.Hosts...)) {
 			for key := range visibilityToKey[rule.Visibility] {
 				if _, ok := output[key]; !ok {
-					output[key] = make(sets.String, len(rule.Hosts))
+					output[key] = make(sets.Set[string], len(rule.Hosts))
 				}
 				output[key].Insert(host)
 			}
@@ -89,15 +90,15 @@ func HostsPerVisibility(ing *v1alpha1.Ingress, visibilityToKey map[v1alpha1.Ingr
 }
 
 // ExpandedHosts sets up hosts for the short-names for cluster DNS names.
-func ExpandedHosts(hosts sets.String) sets.String {
+func ExpandedHosts(hosts sets.Set[string]) sets.Set[string] {
 	allowedSuffixes := []string{
 		"",
 		"." + network.GetClusterDomainName(),
 		".svc." + network.GetClusterDomainName(),
 	}
 	// Optimistically pre-alloc.
-	expanded := make(sets.String, len(hosts)*len(allowedSuffixes))
-	for _, h := range hosts.List() {
+	expanded := make(sets.Set[string], len(hosts)*len(allowedSuffixes))
+	for _, h := range sets.List(hosts) {
 		for _, suffix := range allowedSuffixes {
 			if th := strings.TrimSuffix(h, suffix); suffix == "" || len(th) < len(h) {
 				if isValidTopLevelDomain(th) {
@@ -111,8 +112,9 @@ func ExpandedHosts(hosts sets.String) sets.String {
 
 // Validate that the Top Level Domain of a given hostname is valid.
 // Current checks:
-//  - not all digits
-//  - len < 64
+//   - not all digits
+//   - len < 64
+//
 // Example: '1234' is an invalid TLD
 func isValidTopLevelDomain(domain string) bool {
 	parts := strings.Split(domain, ".")

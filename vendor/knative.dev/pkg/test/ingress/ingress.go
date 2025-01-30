@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,8 +36,10 @@ const (
 // GetIngressEndpoint gets the ingress public IP or hostname.
 // address - is the endpoint to which we should actually connect.
 // portMap - translates the request's port to the port on address to which the caller
-//    should connect.  This is used when the resolution to address goes through some
-//    sort of port-mapping, e.g. Kubernetes node ports.
+//
+//	should connect.  This is used when the resolution to address goes through some
+//	sort of port-mapping, e.g. Kubernetes node ports.
+//
 // err - an error when address/portMap cannot be established.
 func GetIngressEndpoint(ctx context.Context, kubeClientset kubernetes.Interface, endpointOverride string) (address string, portMap func(string) string, err error) {
 	ingressName := istioIngressName
@@ -57,8 +60,8 @@ func GetIngressEndpoint(ctx context.Context, kubeClientset kubernetes.Interface,
 	if endpointOverride != "" {
 		return endpointOverride, func(port string) string {
 			for _, sp := range ingress.Spec.Ports {
-				if fmt.Sprint(sp.Port) == port {
-					return fmt.Sprint(sp.NodePort)
+				if strconv.Itoa(int(sp.Port)) == port {
+					return strconv.Itoa(int(sp.NodePort))
 				}
 			}
 			return port

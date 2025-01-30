@@ -22,30 +22,30 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/networking/pkg/config"
 
 	"knative.dev/networking/pkg/apis/networking"
 	networkingv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/serving/pkg/apis/serving"
-	"knative.dev/serving/pkg/apis/serving/v1alpha1"
-	// . "knative.dev/serving/pkg/testing/v1"
+	"knative.dev/serving/pkg/apis/serving/v1beta1"
 )
 
 func TestMakeCertificate(t *testing.T) {
 	certClass := "cert-class"
 	for _, tc := range []struct {
 		name string
-		dm   v1alpha1.DomainMapping
+		dm   v1beta1.DomainMapping
 		want networkingv1alpha1.Certificate
 	}{{
 		name: "basic",
-		dm: v1alpha1.DomainMapping{
+		dm: v1beta1.DomainMapping{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "mapping.com",
 				Namespace: "the-namespace",
 			},
-			Spec: v1alpha1.DomainMappingSpec{
+			Spec: v1beta1.DomainMappingSpec{
 				Ref: duckv1.KReference{
 					Namespace: "the-namespace",
 					Name:      "the-name",
@@ -58,10 +58,12 @@ func TestMakeCertificate(t *testing.T) {
 				Namespace:   "the-namespace",
 				Annotations: map[string]string{networking.CertificateClassAnnotationKey: certClass},
 				Labels: map[string]string{
-					serving.DomainMappingUIDLabelKey: "mapping.com",
+					serving.DomainMappingUIDLabelKey:   "mapping.com",
+					networking.CertificateTypeLabelKey: string(config.CertificateExternalDomain),
 				},
 			},
 			Spec: networkingv1alpha1.CertificateSpec{
+				Domain: "mapping.com",
 				DNSNames: []string{
 					"mapping.com",
 				},
@@ -70,7 +72,7 @@ func TestMakeCertificate(t *testing.T) {
 		},
 	}, {
 		name: "filter last-applied",
-		dm: v1alpha1.DomainMapping{
+		dm: v1beta1.DomainMapping{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "mapping.com",
 				Namespace: "the-namespace",
@@ -79,7 +81,7 @@ func TestMakeCertificate(t *testing.T) {
 					"others":                           "kept",
 				},
 			},
-			Spec: v1alpha1.DomainMappingSpec{
+			Spec: v1beta1.DomainMappingSpec{
 				Ref: duckv1.KReference{
 					Namespace: "the-namespace",
 					Name:      "the-name",
@@ -95,10 +97,12 @@ func TestMakeCertificate(t *testing.T) {
 					"others":                                 "kept",
 				},
 				Labels: map[string]string{
-					serving.DomainMappingUIDLabelKey: "mapping.com",
+					serving.DomainMappingUIDLabelKey:   "mapping.com",
+					networking.CertificateTypeLabelKey: string(config.CertificateExternalDomain),
 				},
 			},
 			Spec: networkingv1alpha1.CertificateSpec{
+				Domain: "mapping.com",
 				DNSNames: []string{
 					"mapping.com",
 				},

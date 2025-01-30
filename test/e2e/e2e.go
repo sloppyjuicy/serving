@@ -17,12 +17,14 @@ limitations under the License.
 package e2e
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"strconv"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -54,7 +56,7 @@ func Setup(t *testing.T) *test.Clients {
 // SetupAlternativeNamespace creates the client objects needed in e2e tests
 // under the alternative namespace.
 func SetupAlternativeNamespace(t *testing.T) *test.Clients {
-	return test.Setup(t, test.ServingFlags.AltTestNamespace)
+	return test.Setup(t, test.Options{Namespace: test.ServingFlags.AltTestNamespace})
 }
 
 // autoscalerCM returns the current autoscaler config map deployed to the
@@ -84,7 +86,13 @@ func WaitForScaleToZero(t *testing.T, deploymentName string, clients *test.Clien
 		clients.KubeClient,
 		deploymentName,
 		func(d *appsv1.Deployment) (bool, error) {
-			return d.Status.ReadyReplicas == 0, nil
+			return (d.Spec.Replicas == nil || *d.Spec.Replicas == 0) &&
+					d.Status.Replicas == 0 &&
+					d.Status.UpdatedReplicas == 0 &&
+					d.Status.ReadyReplicas == 0 &&
+					d.Status.AvailableReplicas == 0 &&
+					d.Status.UnavailableReplicas == 0,
+				nil
 		},
 		"DeploymentIsScaledDown",
 		test.ServingFlags.TestNamespace,
@@ -95,20 +103,20 @@ func WaitForScaleToZero(t *testing.T, deploymentName string, clients *test.Clien
 // waitForActivatorEndpoints waits for the Service endpoints to match that of activator.
 func waitForActivatorEndpoints(ctx *TestContext) error {
 	var (
-		aset, svcSet sets.String
+		aset, svcSet sets.Set[string]
 		wantAct      int
 	)
 
-	if rerr := wait.Poll(250*time.Millisecond, time.Minute, func() (bool, error) {
+	if rerr := wait.PollUntilContextTimeout(context.Background(), 250*time.Millisecond, time.Minute, true, func(context.Context) (bool, error) {
 		// We need to fetch the activator endpoints at every check, since it can change.
 		actEps, err := ctx.clients.KubeClient.CoreV1().Endpoints(
 			system.Namespace()).Get(context.Background(), networking.ActivatorServiceName, metav1.GetOptions{})
 		if err != nil {
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 		sks, err := ctx.clients.NetworkingClient.ServerlessServices.Get(context.Background(), ctx.resources.Revision.Name, metav1.GetOptions{})
 		if err != nil {
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		svcEps, err := ctx.clients.KubeClient.CoreV1().Endpoints(test.ServingFlags.TestNamespace).Get(
@@ -118,15 +126,15 @@ func waitForActivatorEndpoints(ctx *TestContext) error {
 		}
 
 		wantAct = int(sks.Spec.NumActivators)
-		aset = make(sets.String, wantAct)
+		aset = make(sets.Set[string], wantAct)
 		for _, ss := range actEps.Subsets {
-			for i := 0; i < len(ss.Addresses); i++ {
+			for i := range len(ss.Addresses) {
 				aset.Insert(ss.Addresses[i].IP)
 			}
 		}
-		svcSet = make(sets.String, wantAct)
+		svcSet = make(sets.Set[string], wantAct)
 		for _, ss := range svcEps.Subsets {
-			for i := 0; i < len(ss.Addresses); i++ {
+			for i := range len(ss.Addresses) {
 				svcSet.Insert(ss.Addresses[i].IP)
 			}
 		}
@@ -144,7 +152,7 @@ func waitForActivatorEndpoints(ctx *TestContext) error {
 		ctx.t.Logf("Did not see activator endpoints in public service for %s."+
 			"Last received values: Activator: %v "+
 			"PubSvc: %v, WantActivators %d",
-			ctx.resources.Revision.Name, aset.List(), svcSet.List(), wantAct)
+			ctx.resources.Revision.Name, sets.List(aset), sets.List(svcSet), wantAct)
 		return rerr
 	}
 	return nil
@@ -202,4 +210,49 @@ func RevisionFromConfiguration(clients *test.Clients, configName string) (string
 		return config.Status.LatestCreatedRevisionName, nil
 	}
 	return "", fmt.Errorf("no valid revision name found in configuration %s", configName)
+}
+
+// PrivateServiceName returns the private service name for the given revision.
+func PrivateServiceName(t *testing.T, clients *test.Clients, revision string) string {
+	var privateServiceName string
+
+	if err := wait.PollUntilContextTimeout(context.Background(), time.Second, 1*time.Minute, true, func(context.Context) (bool, error) {
+		sks, err := clients.NetworkingClient.ServerlessServices.Get(context.Background(), revision, metav1.GetOptions{})
+		if err != nil {
+			return false, nil //nolint:nilerr
+		}
+		privateServiceName = sks.Status.PrivateServiceName
+		return privateServiceName != "", nil
+	}); err != nil {
+		t.Fatalf("Error retrieving sks %q: %v", revision, err)
+	}
+
+	return privateServiceName
+}
+
+// WaitForLog waits for the given matcher to match at least given number of lines.
+func WaitForLog(t *testing.T, clients *test.Clients, ns, podName, container string, matcher func(log string) bool, numMatches int) error {
+	return wait.PollUntilContextTimeout(context.Background(), test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
+		req := clients.KubeClient.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{
+			Container: container,
+		})
+		podLogs, err := req.Stream(context.Background())
+		if err != nil {
+			return false, err
+		}
+		defer podLogs.Close()
+
+		count := 0
+		scanner := bufio.NewScanner(podLogs)
+		for scanner.Scan() {
+			t.Logf("%s/%s log: %s", podName, container, scanner.Text())
+			if len(scanner.Bytes()) == 0 {
+				continue
+			}
+			if matcher(scanner.Text()) {
+				count++
+			}
+		}
+		return count >= numMatches, scanner.Err()
+	})
 }

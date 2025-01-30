@@ -19,13 +19,14 @@ package resources
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 
-	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	netv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/serving/pkg/apis/serving"
-	servingv1alpha1 "knative.dev/serving/pkg/apis/serving/v1alpha1"
+	servingv1beta1 "knative.dev/serving/pkg/apis/serving/v1beta1"
 	routeresources "knative.dev/serving/pkg/reconciler/route/resources"
 )
 
@@ -34,13 +35,14 @@ import (
 // backend is always in the same namespace also (as this is required by
 // KIngress).  The created ingress will contain a RewriteHost rule to cause the
 // given hostName to be used as the host.
-func MakeIngress(dm *servingv1alpha1.DomainMapping, backendServiceName, hostName, ingressClass string, httpOption netv1alpha1.HTTPOption, tls []netv1alpha1.IngressTLS, acmeChallenges ...netv1alpha1.HTTP01Challenge) *netv1alpha1.Ingress {
+func MakeIngress(dm *servingv1beta1.DomainMapping, backendServiceName, hostName, ingressClass string, httpOption netv1alpha1.HTTPOption, tls []netv1alpha1.IngressTLS, acmeChallenges ...netv1alpha1.HTTP01Challenge) *netv1alpha1.Ingress {
+	paths, hosts := routeresources.MakeACMEIngressPaths(acmeChallenges, sets.New(dm.GetName()))
 	return &netv1alpha1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      kmeta.ChildName(dm.GetName(), ""),
 			Namespace: dm.Namespace,
 			Annotations: kmeta.FilterMap(kmeta.UnionMaps(map[string]string{
-				networking.IngressClassAnnotationKey: ingressClass,
+				netapi.IngressClassAnnotationKey: ingressClass,
 			}, dm.GetAnnotations()), routeresources.ExcludedAnnotations.Has),
 			Labels: kmeta.UnionMaps(dm.Labels, map[string]string{
 				serving.DomainMappingUIDLabelKey:       string(dm.UID),
@@ -52,17 +54,17 @@ func MakeIngress(dm *servingv1alpha1.DomainMapping, backendServiceName, hostName
 			HTTPOption: httpOption,
 			TLS:        tls,
 			Rules: []netv1alpha1.IngressRule{{
-				Hosts:      []string{dm.Name},
+				Hosts:      append(hosts, dm.Name),
 				Visibility: netv1alpha1.IngressVisibilityExternalIP,
 				HTTP: &netv1alpha1.HTTPIngressRuleValue{
 					// The order of the paths is sensitive, always put tls challenge first
-					Paths: append(routeresources.MakeACMEIngressPaths(acmeChallenges, dm.GetName()),
+					Paths: append(paths,
 						[]netv1alpha1.HTTPIngressPath{{
 							RewriteHost: hostName,
 							Splits: []netv1alpha1.IngressBackendSplit{{
 								Percent: 100,
 								AppendHeaders: map[string]string{
-									network.OriginalHostHeader: dm.Name,
+									netheader.OriginalHostKey: dm.Name,
 								},
 								IngressBackend: netv1alpha1.IngressBackend{
 									ServiceNamespace: dm.Namespace,

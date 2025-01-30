@@ -22,8 +22,7 @@ import (
 	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
-
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // factoryTestGenerator produces a file of factory injection of a given type.
@@ -118,14 +117,15 @@ func withInformerFactory(ctx {{.contextContext|raw}}) {{.contextContext|raw}} {
 	}
 	labelSelectors := untyped.([]string)
 	for _, selector := range labelSelectors {
+        selectorVal := selector
 		opts := []{{.informersSharedInformerOption|raw}}{}
 		if {{.injectionHasNamespace|raw}}(ctx) {
 			opts = append(opts, {{.informersWithNamespace|raw}}({{.injectionGetNamespace|raw}}(ctx)))
 		}	
 		opts = append(opts, {{.informersWithTweakListOptions|raw}}(func(l *{{.metav1ListOptions|raw}}) {
-			l.LabelSelector = selector
+			l.LabelSelector = selectorVal
 		}))
-		ctx = context.WithValue(ctx, Key{Selector: selector},
+		ctx = context.WithValue(ctx, Key{Selector: selectorVal},
 			{{.informersNewSharedInformerFactoryWithOptions|raw}}(c, {{.controllerGetResyncPeriod|raw}}(ctx), opts...))
 	}
 	return ctx

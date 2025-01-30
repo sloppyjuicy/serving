@@ -62,8 +62,8 @@ func TestContextsErrors(t *testing.T) {
 		strings.Repeat("a", 256), // Longer than 255 characters.
 	}
 	for _, v := range invalidTagValues {
-		if _, err := PodContext(v, v); err == nil {
-			t.Errorf("PodContext(%q) = nil, wanted an error", v)
+		if _, err := podContext(v, v); err == nil {
+			t.Errorf("podContext(%q) = nil, wanted an error", v)
 		}
 		if _, err := PodRevisionContext(v, v, v, v, v, v); err == nil {
 			t.Errorf("PodRevisionContext(%q) = nil, wanted an error", v)
@@ -80,7 +80,7 @@ func TestContexts(t *testing.T) {
 	}{{
 		name: "pod context",
 		ctx: mustCtx(t, func() (context.Context, error) {
-			return PodContext("testpod", "testcontainer")
+			return podContext("testpod", "testcontainer")
 		}),
 		wantTags: map[string]string{
 			LabelPodName:       "testpod",
@@ -173,11 +173,11 @@ func TestContexts(t *testing.T) {
 	}, {
 		name: "pod context augmented with revision",
 		ctx: mustCtx(t, func() (context.Context, error) {
-			ctx, err := PodContext("testpod", "testcontainer")
+			ctx, err := podContext("testpod", "testcontainer")
 			if err != nil {
 				return ctx, err
 			}
-			return AugmentWithRevision(ctx, "testns", "testsvc", "testcfg", "testrev"), nil
+			return augmentWithRevision(ctx, "testns", "testsvc", "testcfg", "testrev"), nil
 		}),
 		wantTags: map[string]string{
 			LabelPodName:       "testpod",
@@ -232,7 +232,7 @@ func BenchmarkPodRevisionContext(b *testing.B) {
 	for _, revisions := range []int{1, 1024, 4095, 0xFFFF, 409600} {
 		b.Run(fmt.Sprintf("sequential-%d-revisions", revisions), func(b *testing.B) {
 			contextCache.Purge()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				rev := "name" + strconv.Itoa(rand.Intn(revisions))
 				PodRevisionContext("pod", "container", "ns", "svc", "cfg", rev)
 			}

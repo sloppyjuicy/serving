@@ -83,7 +83,6 @@ func (c *Reconciler) reconcileIngress(
 		if !equality.Semantic.DeepEqual(ingress.Spec, desired.Spec) ||
 			!equality.Semantic.DeepEqual(ingress.Annotations, desired.Annotations) ||
 			!equality.Semantic.DeepEqual(ingress.Labels, desired.Labels) {
-
 			// It is notable that one reason for differences here may be defaulting.
 			// When that is the case, the Update will end up being a nop because the
 			// webhook will bring them into alignment and no new reconciliation will occur.
@@ -111,7 +110,7 @@ func (c *Reconciler) reconcileIngress(
 func (c *Reconciler) deleteOrphanedServices(ctx context.Context, r *v1.Route, activeServices []resources.ServicePair) error {
 	ns := r.Namespace
 
-	active := make(sets.String, len(activeServices))
+	active := make(sets.Set[string], len(activeServices))
 
 	for _, service := range activeServices {
 		active.Insert(service.Service.Name)
@@ -119,7 +118,6 @@ func (c *Reconciler) deleteOrphanedServices(ctx context.Context, r *v1.Route, ac
 
 	routeLabelSelector := labels.SelectorFromSet(labels.Set{serving.RouteLabelKey: r.Name})
 	allServices, err := c.serviceLister.Services(ns).List(routeLabelSelector)
-
 	if err != nil {
 		return fmt.Errorf("failed to fetch existing services: %w", err)
 	}
@@ -154,7 +152,7 @@ func (c *Reconciler) reconcilePlaceholderServices(ctx context.Context, route *v1
 	recorder := controller.GetEventRecorder(ctx)
 	ns := route.Namespace
 	services := make([]resources.ServicePair, 0, len(targets))
-	names := make(sets.String, len(targets))
+	names := make(sets.Set[string], len(targets))
 
 	// Note: this is done in order for the tests to be
 	// deterministic since they assert creations in order
@@ -162,7 +160,7 @@ func (c *Reconciler) reconcilePlaceholderServices(ctx context.Context, route *v1
 		names.Insert(name)
 	}
 
-	for _, name := range names.List() {
+	for _, name := range sets.List(names) {
 		desiredService, err := resources.MakeK8sPlaceholderService(ctx, route, name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct placeholder k8s service: %w", err)
@@ -222,7 +220,6 @@ func (c *Reconciler) updatePlaceholderServices(ctx context.Context, route *v1.Ro
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	for _, from := range pairs {
-		from := from
 		eg.Go(func() error {
 			to, err := resources.MakeK8sService(egCtx, route, from.Tag, ingress, resources.IsClusterLocalService(from.Service))
 			if err != nil {
@@ -253,7 +250,6 @@ func (c *Reconciler) updatePlaceholderServices(ctx context.Context, route *v1.Ro
 				// else:
 				//   clusterIPs are immutable thus any transition requires a recreate
 				//   ie. "None" <=> "" (blank - request an IP)
-
 			} else /* types are the same and not clusterIP */ {
 				canUpdate = true
 			}
@@ -329,7 +325,8 @@ func deserializeRollout(ctx context.Context, ro string) *traffic.Rollout {
 
 func (c *Reconciler) reconcileRollout(
 	ctx context.Context, r *v1.Route, tc *traffic.Config,
-	ingress *netv1alpha1.Ingress) *traffic.Rollout {
+	ingress *netv1alpha1.Ingress,
+) *traffic.Rollout {
 	cfg := config.FromContext(ctx)
 
 	// Is there rollout duration specified?
@@ -344,7 +341,6 @@ func (c *Reconciler) reconcileRollout(
 		return curRO
 	}
 	// Get the current rollout state as described by the traffic.
-	nextStepTime := int64(0)
 	logger := logging.FromContext(ctx).Desugar().With(
 		zap.Int("durationSecs", rd))
 	logger.Debug("Rollout is enabled. Stepping from previous state.")

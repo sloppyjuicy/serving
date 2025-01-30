@@ -38,7 +38,6 @@ func (c *Reconciler) createDeployment(ctx context.Context, rev *v1.Revision) (*a
 	cfgs := config.FromContext(ctx)
 
 	deployment, err := resources.MakeDeployment(rev, cfgs)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to make deployment: %w", err)
 	}
@@ -99,7 +98,11 @@ func (c *Reconciler) createImageCache(ctx context.Context, rev *v1.Revision, con
 	return c.cachingclient.CachingV1alpha1().Images(image.Namespace).Create(ctx, image, metav1.CreateOptions{})
 }
 
-func (c *Reconciler) createPA(ctx context.Context, rev *v1.Revision) (*autoscalingv1alpha1.PodAutoscaler, error) {
-	pa := resources.MakePA(rev)
+func (c *Reconciler) createPA(
+	ctx context.Context,
+	rev *v1.Revision,
+	deployment *appsv1.Deployment,
+) (*autoscalingv1alpha1.PodAutoscaler, error) {
+	pa := resources.MakePA(rev, deployment)
 	return c.client.AutoscalingV1alpha1().PodAutoscalers(pa.Namespace).Create(ctx, pa, metav1.CreateOptions{})
 }
