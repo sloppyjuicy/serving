@@ -21,22 +21,22 @@ metadata:
     app.kubernetes.io/component: autoscaler
     app.kubernetes.io/name: knative-serving
     app.kubernetes.io/version: devel
-    serving.knative.dev/release: devel
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: autoscaler
+  strategy:
+     type: RollingUpdate
+     rollingUpdate:
+       maxUnavailable: 0
   template:
     metadata:
-      annotations:
-        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
       labels:
         app: autoscaler
         app.kubernetes.io/component: autoscaler
         app.kubernetes.io/name: knative-serving
         app.kubernetes.io/version: devel
-        serving.knative.dev/release: devel
     spec:
       # To avoid node becoming SPOF, spread our replicas to different nodes.
       affinity:
@@ -91,7 +91,9 @@ spec:
           runAsNonRoot: true
           capabilities:
             drop:
-            - all
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
 
         ports:
         - name: metrics
@@ -104,15 +106,9 @@ spec:
         readinessProbe:
           httpGet:
             port: 8080
-            httpHeaders:
-            - name: k-kubelet-probe
-              value: "autoscaler"
         livenessProbe:
           httpGet:
             port: 8080
-            httpHeaders:
-            - name: k-kubelet-probe
-              value: "autoscaler"
           failureThreshold: 6
 
 ---
@@ -124,7 +120,6 @@ metadata:
     app.kubernetes.io/component: autoscaler
     app.kubernetes.io/name: knative-serving
     app.kubernetes.io/version: devel
-    serving.knative.dev/release: devel
   name: autoscaler
   namespace: knative-serving
 spec:

@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// SecretApplyConfiguration represents an declarative configuration of the Secret type for use
+// SecretApplyConfiguration represents a declarative configuration of the Secret type for use
 // with apply.
 type SecretApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -38,7 +38,7 @@ type SecretApplyConfiguration struct {
 	Type                             *corev1.SecretType `json:"type,omitempty"`
 }
 
-// Secret constructs an declarative configuration of the Secret type for use with
+// Secret constructs a declarative configuration of the Secret type for use with
 // apply.
 func Secret(name, namespace string) *SecretApplyConfiguration {
 	b := &SecretApplyConfiguration{}
@@ -52,7 +52,7 @@ func Secret(name, namespace string) *SecretApplyConfiguration {
 // ExtractSecret extracts the applied configuration owned by fieldManager from
 // secret. If no managedFields are found in secret for fieldManager, a
 // SecretApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // secret must be a unmodified Secret API object that was retrieved from the Kubernetes API.
@@ -61,8 +61,19 @@ func Secret(name, namespace string) *SecretApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractSecret(secret *corev1.Secret, fieldManager string) (*SecretApplyConfiguration, error) {
+	return extractSecret(secret, fieldManager, "")
+}
+
+// ExtractSecretStatus is the same as ExtractSecret except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractSecretStatus(secret *corev1.Secret, fieldManager string) (*SecretApplyConfiguration, error) {
+	return extractSecret(secret, fieldManager, "status")
+}
+
+func extractSecret(secret *corev1.Secret, fieldManager string, subresource string) (*SecretApplyConfiguration, error) {
 	b := &SecretApplyConfiguration{}
-	err := managedfields.ExtractInto(secret, internal.Parser().Type("io.k8s.api.core.v1.Secret"), fieldManager, b)
+	err := managedfields.ExtractInto(secret, internal.Parser().Type("io.k8s.api.core.v1.Secret"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -114,15 +125,6 @@ func (b *SecretApplyConfiguration) WithGenerateName(value string) *SecretApplyCo
 func (b *SecretApplyConfiguration) WithNamespace(value string) *SecretApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *SecretApplyConfiguration) WithSelfLink(value string) *SecretApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -235,15 +237,6 @@ func (b *SecretApplyConfiguration) WithFinalizers(values ...string) *SecretApply
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *SecretApplyConfiguration) WithClusterName(value string) *SecretApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *SecretApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -292,4 +285,10 @@ func (b *SecretApplyConfiguration) WithStringData(entries map[string]string) *Se
 func (b *SecretApplyConfiguration) WithType(value corev1.SecretType) *SecretApplyConfiguration {
 	b.Type = &value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *SecretApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

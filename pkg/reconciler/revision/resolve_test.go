@@ -19,6 +19,7 @@ package revision
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -29,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +46,7 @@ import (
 	fakeclient "k8s.io/client-go/kubernetes/fake"
 )
 
-var emptyRegistrySet = sets.NewString()
+var emptyRegistrySet = sets.New[string]()
 
 func mustDigest(t *testing.T, img v1.Image) v1.Hash {
 	h, err := img.Digest()
@@ -91,7 +93,7 @@ func fakeRegistry(t *testing.T, repo, username, password, ua string, img v1.Imag
 				t.Error("Digest() =", err)
 			}
 			w.Header().Set("Content-Type", string(mt))
-			w.Header().Set("Content-Length", fmt.Sprint(sz))
+			w.Header().Set("Content-Length", strconv.FormatInt(sz, 10))
 			w.Header().Set("Docker-Content-Digest", digest.String())
 		default:
 			t.Error("Unexpected path:", r.URL.Path)
@@ -348,23 +350,6 @@ func TestResolveWithManifestFailure(t *testing.T) {
 	}
 }
 
-func TestResolveNoAccess(t *testing.T) {
-	const (
-		ns      = "foo"
-		svcacct = "default"
-	)
-	client := fakeclient.NewSimpleClientset()
-	dr := &digestResolver{client: client, transport: http.DefaultTransport}
-	opt := k8schain.Options{
-		Namespace:          ns,
-		ServiceAccountName: svcacct,
-	}
-	// If there is a failure accessing the ServiceAccount for this Pod, then we should see an error.
-	if resolvedDigest, err := dr.Resolve(context.Background(), "ubuntu:latest", opt, emptyRegistrySet); err == nil {
-		t.Fatalf("Resolve() = %v, want error", resolvedDigest)
-	}
-}
-
 func TestResolveTimeout(t *testing.T) {
 	// Stand up a fake registry which blocks until cancelled.
 	server, cancel := fakeRegistryBlocking(t)
@@ -448,7 +433,7 @@ func TestResolveSkippingRegistry(t *testing.T) {
 		transport: http.DefaultTransport,
 	}
 
-	registriesToSkip := sets.NewString("localhost:5000")
+	registriesToSkip := sets.New("localhost:5000")
 
 	opt := k8schain.Options{
 		Namespace:          ns,
@@ -466,31 +451,6 @@ func TestResolveSkippingRegistry(t *testing.T) {
 }
 
 func TestNewResolverTransport(t *testing.T) {
-	// Cert stolen from crypto/x509/example_test.go
-	const certPEM = `
------BEGIN CERTIFICATE-----
-MIIDujCCAqKgAwIBAgIIE31FZVaPXTUwDQYJKoZIhvcNAQEFBQAwSTELMAkGA1UE
-BhMCVVMxEzARBgNVBAoTCkdvb2dsZSBJbmMxJTAjBgNVBAMTHEdvb2dsZSBJbnRl
-cm5ldCBBdXRob3JpdHkgRzIwHhcNMTQwMTI5MTMyNzQzWhcNMTQwNTI5MDAwMDAw
-WjBpMQswCQYDVQQGEwJVUzETMBEGA1UECAwKQ2FsaWZvcm5pYTEWMBQGA1UEBwwN
-TW91bnRhaW4gVmlldzETMBEGA1UECgwKR29vZ2xlIEluYzEYMBYGA1UEAwwPbWFp
-bC5nb29nbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfRrObuSW5T7q
-5CnSEqefEmtH4CCv6+5EckuriNr1CjfVvqzwfAhopXkLrq45EQm8vkmf7W96XJhC
-7ZM0dYi1/qOCAU8wggFLMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjAa
-BgNVHREEEzARgg9tYWlsLmdvb2dsZS5jb20wCwYDVR0PBAQDAgeAMGgGCCsGAQUF
-BwEBBFwwWjArBggrBgEFBQcwAoYfaHR0cDovL3BraS5nb29nbGUuY29tL0dJQUcy
-LmNydDArBggrBgEFBQcwAYYfaHR0cDovL2NsaWVudHMxLmdvb2dsZS5jb20vb2Nz
-cDAdBgNVHQ4EFgQUiJxtimAuTfwb+aUtBn5UYKreKvMwDAYDVR0TAQH/BAIwADAf
-BgNVHSMEGDAWgBRK3QYWG7z2aLV29YG2u2IaulqBLzAXBgNVHSAEEDAOMAwGCisG
-AQQB1nkCBQEwMAYDVR0fBCkwJzAloCOgIYYfaHR0cDovL3BraS5nb29nbGUuY29t
-L0dJQUcyLmNybDANBgkqhkiG9w0BAQUFAAOCAQEAH6RYHxHdcGpMpFE3oxDoFnP+
-gtuBCHan2yE2GRbJ2Cw8Lw0MmuKqHlf9RSeYfd3BXeKkj1qO6TVKwCh+0HdZk283
-TZZyzmEOyclm3UGFYe82P/iDFt+CeQ3NpmBg+GoaVCuWAARJN/KfglbLyyYygcQq
-0SgeDh8dRKUiaW3HQSoYvTvdTuqzwK4CXsr3b5/dAOY8uMuG/IAR3FgwTbZ1dtoW
-RvOTa8hYiU6A475WuZKyEHcwnGYe57u2I2KbMgcKjPniocj4QzgYsVAVKW3IwaOh
-yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
------END CERTIFICATE-----`
-
 	cases := []struct {
 		name               string
 		certBundle         string
@@ -512,14 +472,13 @@ yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
 		// Fails with invalid cert for path.
 		name:               "invalid cert",
 		certBundle:         "invalid-cert.crt",
-		certBundleContents: []byte("this will not parse"),
+		certBundleContents: nil,
 		wantErr:            true,
 	}}
 
 	tmpDir := t.TempDir()
 
 	for i, tc := range cases {
-		i, tc := i, tc
 		t.Run(fmt.Sprintf("cases[%d]", i), func(t *testing.T) {
 			// Setup.
 			path, err := writeCertFile(tmpDir, tc.certBundle, tc.certBundleContents)
@@ -534,10 +493,55 @@ yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
 				t.Error("Didn't get an error when we wanted it")
 			} else if err == nil {
 				// If we didn't get an error, make sure everything we wanted to happen happened.
+				//nolint:staticcheck // ignore deprecation since we're not asserting system roots
 				subjects := tr.TLSClientConfig.RootCAs.Subjects()
 
 				if !containsSubject(t, subjects, tc.certBundleContents) {
 					t.Error("Cert pool does not contain certBundleContents")
+				}
+			}
+		})
+	}
+}
+
+func TestNewResolverTransport_TLSMinVersion(t *testing.T) {
+	cases := []struct {
+		name           string
+		envOverride    string
+		expectedMinTLS uint16
+		expectedPanic  bool
+	}{{
+		name:           "TLS 1.2",
+		envOverride:    "1.2",
+		expectedMinTLS: tls.VersionTLS12,
+	}, {
+		name:           "TLS 1.3",
+		envOverride:    "1.3",
+		expectedMinTLS: tls.VersionTLS13,
+	}, {
+		name:           "default TLS 1.2",
+		envOverride:    "",
+		expectedMinTLS: tls.VersionTLS12,
+	}}
+
+	tmpDir := t.TempDir()
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tlsMinVersionEnvKey, tc.envOverride)
+
+			// noop for this test
+			path, err := writeCertFile(tmpDir, "cert.pem", []byte(certPEM))
+			if err != nil {
+				t.Fatal("Failed to write cert bundle file:", err)
+			}
+
+			// The actual test.
+			if tr, err := newResolverTransport(path, 100, 100); err != nil {
+				t.Error("Got unexpected err:", err)
+			} else if err == nil {
+				if diff := cmp.Diff(tc.expectedMinTLS, tr.TLSClientConfig.MinVersion); diff != "" {
+					t.Errorf("expected min TLS version does not match: %s", diff)
 				}
 			}
 		})
@@ -572,3 +576,28 @@ func containsSubject(t *testing.T, subjects [][]byte, contents []byte) bool {
 
 	return false
 }
+
+// Cert stolen from crypto/x509/example_test.go
+const certPEM = `
+-----BEGIN CERTIFICATE-----
+MIIDujCCAqKgAwIBAgIIE31FZVaPXTUwDQYJKoZIhvcNAQEFBQAwSTELMAkGA1UE
+BhMCVVMxEzARBgNVBAoTCkdvb2dsZSBJbmMxJTAjBgNVBAMTHEdvb2dsZSBJbnRl
+cm5ldCBBdXRob3JpdHkgRzIwHhcNMTQwMTI5MTMyNzQzWhcNMTQwNTI5MDAwMDAw
+WjBpMQswCQYDVQQGEwJVUzETMBEGA1UECAwKQ2FsaWZvcm5pYTEWMBQGA1UEBwwN
+TW91bnRhaW4gVmlldzETMBEGA1UECgwKR29vZ2xlIEluYzEYMBYGA1UEAwwPbWFp
+bC5nb29nbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfRrObuSW5T7q
+5CnSEqefEmtH4CCv6+5EckuriNr1CjfVvqzwfAhopXkLrq45EQm8vkmf7W96XJhC
+7ZM0dYi1/qOCAU8wggFLMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjAa
+BgNVHREEEzARgg9tYWlsLmdvb2dsZS5jb20wCwYDVR0PBAQDAgeAMGgGCCsGAQUF
+BwEBBFwwWjArBggrBgEFBQcwAoYfaHR0cDovL3BraS5nb29nbGUuY29tL0dJQUcy
+LmNydDArBggrBgEFBQcwAYYfaHR0cDovL2NsaWVudHMxLmdvb2dsZS5jb20vb2Nz
+cDAdBgNVHQ4EFgQUiJxtimAuTfwb+aUtBn5UYKreKvMwDAYDVR0TAQH/BAIwADAf
+BgNVHSMEGDAWgBRK3QYWG7z2aLV29YG2u2IaulqBLzAXBgNVHSAEEDAOMAwGCisG
+AQQB1nkCBQEwMAYDVR0fBCkwJzAloCOgIYYfaHR0cDovL3BraS5nb29nbGUuY29t
+L0dJQUcyLmNybDANBgkqhkiG9w0BAQUFAAOCAQEAH6RYHxHdcGpMpFE3oxDoFnP+
+gtuBCHan2yE2GRbJ2Cw8Lw0MmuKqHlf9RSeYfd3BXeKkj1qO6TVKwCh+0HdZk283
+TZZyzmEOyclm3UGFYe82P/iDFt+CeQ3NpmBg+GoaVCuWAARJN/KfglbLyyYygcQq
+0SgeDh8dRKUiaW3HQSoYvTvdTuqzwK4CXsr3b5/dAOY8uMuG/IAR3FgwTbZ1dtoW
+RvOTa8hYiU6A475WuZKyEHcwnGYe57u2I2KbMgcKjPniocj4QzgYsVAVKW3IwaOh
+yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
+-----END CERTIFICATE-----`

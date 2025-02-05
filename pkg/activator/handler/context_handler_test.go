@@ -72,6 +72,16 @@ func TestContextHandler(t *testing.T) {
 			t.Errorf("StatusCode = %d, want %d, body: %s", got, want, resp.Body.String())
 		}
 	})
+
+	t.Run("with host containing port", func(t *testing.T) {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "http://"+network.GetServiceHostname(revID.Name, revID.Namespace)+":80", bytes.NewBufferString(""))
+		handler.ServeHTTP(resp, req)
+
+		if got, want := resp.Code, http.StatusOK; got != want {
+			t.Errorf("StatusCode = %d, want %d, body: %s", got, want, resp.Body.String())
+		}
+	})
 }
 
 func TestContextHandlerError(t *testing.T) {
@@ -125,13 +135,13 @@ func BenchmarkContextHandler(b *testing.B) {
 
 	for _, test := range tests {
 		req.Header.Set(activator.RevisionHeaderName, test.revisionName)
-		b.Run(fmt.Sprintf("%s-sequential", test.label), func(b *testing.B) {
+		b.Run(test.label+"-sequential", func(b *testing.B) {
 			resp := httptest.NewRecorder()
-			for j := 0; j < b.N; j++ {
+			for range b.N {
 				handler.ServeHTTP(resp, req)
 			}
 		})
-		b.Run(fmt.Sprintf("%s-parallel", test.label), func(b *testing.B) {
+		b.Run(test.label+"-parallel", func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				resp := httptest.NewRecorder()
 				for pb.Next() {

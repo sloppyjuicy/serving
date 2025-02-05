@@ -28,10 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgotesting "k8s.io/client-go/testing"
 
-	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	netv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
 	networkingclient "knative.dev/networking/pkg/client/injection/client/fake"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/apis"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
 	"knative.dev/pkg/configmap"
@@ -42,16 +42,19 @@ import (
 	pkgreconciler "knative.dev/pkg/reconciler"
 	"knative.dev/pkg/resolver"
 	"knative.dev/pkg/tracker"
+
 	"knative.dev/serving/pkg/apis/serving"
 	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/pkg/apis/serving/v1alpha1"
+	"knative.dev/serving/pkg/apis/serving/v1beta1"
 	servingclient "knative.dev/serving/pkg/client/injection/client/fake"
-	domainmappingreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1alpha1/domainmapping"
+	domainmappingreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1beta1/domainmapping"
 	"knative.dev/serving/pkg/reconciler/domainmapping/config"
 	"knative.dev/serving/pkg/reconciler/domainmapping/resources"
 
 	"knative.dev/pkg/client/injection/ducks/duck/v1/addressable"
 	. "knative.dev/pkg/reconciler/testing"
+
 	. "knative.dev/serving/pkg/reconciler/testing/v1"
 	. "knative.dev/serving/pkg/testing"
 )
@@ -112,7 +115,7 @@ func TestReconcile(t *testing.T) {
 		WantDeletes: []clientgotesting.DeleteActionImpl{{
 			ActionImpl: clientgotesting.ActionImpl{
 				Verb:     "delete",
-				Resource: v1alpha1.SchemeGroupVersion.WithResource("clusterdomainclaims"),
+				Resource: v1beta1.SchemeGroupVersion.WithResource("clusterdomainclaims"),
 			},
 			Name: "cleanup.on.aisle-three",
 		}},
@@ -217,7 +220,7 @@ func TestReconcile(t *testing.T) {
 				withInitDomainMappingConditions,
 				withTLSNotEnabled,
 				withDomainClaimed,
-				withReferenceNotResolved(`services.serving.knative.dev "target" not found`),
+				withReferenceNotResolved(`failed to get object default/target: services.serving.knative.dev "target" not found`),
 			),
 		}},
 		SkipNamespaceValidation: true, // allow creation of ClusterDomainClaim.
@@ -229,7 +232,7 @@ func TestReconcile(t *testing.T) {
 		},
 		WantEvents: []string{
 			Eventf(corev1.EventTypeNormal, "FinalizerUpdate", "Updated %q finalizers", "first-reconcile.com"),
-			Eventf(corev1.EventTypeWarning, "InternalError", `resolving reference: services.serving.knative.dev "target" not found`),
+			Eventf(corev1.EventTypeWarning, "InternalError", `resolving reference: failed to get object default/target: services.serving.knative.dev "target" not found`),
 		},
 	}, {
 		Name: "first reconcile, ref has a path",
@@ -416,7 +419,7 @@ func TestReconcile(t *testing.T) {
 			ksvc("default", "target", "the-target-svc.default.svc.cluster.local", ""),
 			domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target"),
 				withAnnotations(map[string]string{
-					networking.IngressClassAnnotationKey: "overridden-ingress-class",
+					netapi.IngressClassAnnotationKey: "overridden-ingress-class",
 				}),
 			),
 		},
@@ -431,7 +434,7 @@ func TestReconcile(t *testing.T) {
 				withIngressNotConfigured,
 				withReferenceResolved,
 				withAnnotations(map[string]string{
-					networking.IngressClassAnnotationKey: "overridden-ingress-class",
+					netapi.IngressClassAnnotationKey: "overridden-ingress-class",
 				}),
 			),
 		}},
@@ -440,6 +443,45 @@ func TestReconcile(t *testing.T) {
 			resources.MakeDomainClaim(domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target"))),
 			resources.MakeIngress(domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target")),
 				"the-target-svc", "the-target-svc.default.svc.cluster.local", "overridden-ingress-class", netv1alpha1.HTTPOptionEnabled, nil /* tls */),
+		},
+		WantPatches: []clientgotesting.PatchActionImpl{
+			patchAddFinalizerAction("default", "ingressclass.first-reconcile.com"),
+		},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeNormal, "FinalizerUpdate", "Updated %q finalizers", "ingressclass.first-reconcile.com"),
+			Eventf(corev1.EventTypeNormal, "Created", "Created Ingress %q", "ingressclass.first-reconcile.com"),
+		},
+	}, {
+		Name: "reconcile with new label",
+		Key:  "default/ingressclass.first-reconcile.com",
+		Objects: []runtime.Object{
+			ksvc("default", "target", "the-target-svc.default.svc.cluster.local", ""),
+			domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target"),
+				withLabels(map[string]string{
+					netapi.IngressLabelKey: "new-label",
+				}),
+			),
+		},
+		WantStatusUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: domainMapping("default", "ingressclass.first-reconcile.com",
+				withRef("default", "target"),
+				withURL("http", "ingressclass.first-reconcile.com"),
+				withAddress("http", "ingressclass.first-reconcile.com"),
+				withInitDomainMappingConditions,
+				withTLSNotEnabled,
+				withDomainClaimed,
+				withIngressNotConfigured,
+				withReferenceResolved,
+				withLabels(map[string]string{
+					netapi.IngressLabelKey: "new-label",
+				}),
+			),
+		}},
+		SkipNamespaceValidation: true, // allow creation of ClusterDomainClaim.
+		WantCreates: []runtime.Object{
+			resources.MakeDomainClaim(domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target"))),
+			resources.MakeIngress(domainMapping("default", "ingressclass.first-reconcile.com", withRef("default", "target"), withLabels(map[string]string{netapi.IngressLabelKey: "new-label"})),
+				"the-target-svc", "the-target-svc.default.svc.cluster.local", "the-ingress-class", netv1alpha1.HTTPOptionEnabled, nil /* tls */),
 		},
 		WantPatches: []clientgotesting.PatchActionImpl{
 			patchAddFinalizerAction("default", "ingressclass.first-reconcile.com"),
@@ -711,10 +753,10 @@ func TestReconcile(t *testing.T) {
 		}
 
 		cfg := &config.Config{
-			Network: &network.Config{
+			Network: &netcfg.Config{
 				DefaultIngressClass:           "the-ingress-class",
 				AutocreateClusterDomainClaims: true,
-				HTTPProtocol:                  network.HTTPEnabled,
+				HTTPProtocol:                  netcfg.HTTPEnabled,
 				DefaultExternalScheme:         "http",
 			},
 		}
@@ -757,7 +799,7 @@ func TestReconcileAutocreateClaimsDisabled(t *testing.T) {
 		},
 		WantEvents: []string{
 			Eventf(corev1.EventTypeNormal, "FinalizerUpdate", "Updated %q finalizers", "first-reconcile.com"),
-			Eventf(corev1.EventTypeWarning, "InternalError", `no ClusterDomainClaim found for domain "first-reconcile.com"`),
+			Eventf(corev1.EventTypeWarning, "InternalError", `no ClusterDomainClaim found for domain "first-reconcile.com" (and autocreate-cluster-domain-claims property is not true)`),
 		},
 	}, {
 		Name: "first reconcile, claim exists and is owned",
@@ -847,10 +889,10 @@ func TestReconcileAutocreateClaimsDisabled(t *testing.T) {
 			servingclient.Get(ctx), listers.GetDomainMappingLister(), controller.GetEventRecorder(ctx), r,
 			controller.Options{ConfigStore: &testConfigStore{
 				config: &config.Config{
-					Network: &network.Config{
+					Network: &netcfg.Config{
 						DefaultIngressClass:           "the-ingress-class",
 						AutocreateClusterDomainClaims: false,
-						HTTPProtocol:                  network.HTTPEnabled,
+						HTTPProtocol:                  netcfg.HTTPEnabled,
 						DefaultExternalScheme:         "http",
 					},
 				},
@@ -921,13 +963,15 @@ func TestReconcileTLSEnabled(t *testing.T) {
 							withURL("http", "becomes.ready.run"),
 							withAddress("http", "becomes.ready.run")))},
 					Annotations: map[string]string{
-						networking.CertificateClassAnnotationKey: "the-cert-class",
+						netapi.CertificateClassAnnotationKey: "the-cert-class",
 					},
 					Labels: map[string]string{
 						serving.DomainMappingUIDLabelKey: "becomes.ready.run",
+						netapi.CertificateTypeLabelKey:   string(netcfg.CertificateExternalDomain),
 					},
 				},
 				Spec: netv1alpha1.CertificateSpec{
+					Domain:     "becomes.ready.run",
 					DNSNames:   []string{"becomes.ready.run"},
 					SecretName: "becomes.ready.run",
 				},
@@ -979,7 +1023,7 @@ func TestReconcileTLSEnabled(t *testing.T) {
 					Name:      "cert.not.owned.ru",
 					Namespace: "default",
 					Annotations: map[string]string{
-						networking.CertificateClassAnnotationKey: "the-cert-class",
+						netapi.CertificateClassAnnotationKey: "the-cert-class",
 					},
 				},
 			},
@@ -1000,7 +1044,7 @@ func TestReconcileTLSEnabled(t *testing.T) {
 		},
 		WantEvents: []string{
 			Eventf(corev1.EventTypeNormal, "FinalizerUpdate", "Updated %q finalizers", "cert.not.owned.ru"),
-			Eventf(corev1.EventTypeWarning, "InternalError", `notowned: owner: cert.not.owned.ru with Type *v1alpha1.DomainMapping does not own Certificate: "cert.not.owned.ru"`),
+			Eventf(corev1.EventTypeWarning, "InternalError", `notowned: owner: cert.not.owned.ru with Type *v1beta1.DomainMapping does not own Certificate: "cert.not.owned.ru"`),
 		},
 	}, {
 		Name:    "cert creation failed",
@@ -1067,13 +1111,15 @@ func TestReconcileTLSEnabled(t *testing.T) {
 							withAddress("http", "challenged.com"),
 						))},
 					Annotations: map[string]string{
-						networking.CertificateClassAnnotationKey: "the-cert-class",
+						netapi.CertificateClassAnnotationKey: "the-cert-class",
 					},
 					Labels: map[string]string{
 						serving.DomainMappingUIDLabelKey: "challenged.com",
+						netapi.CertificateTypeLabelKey:   string(netcfg.CertificateExternalDomain),
 					},
 				},
 				Spec: netv1alpha1.CertificateSpec{
+					Domain:     "challenged.com",
 					DNSNames:   []string{"challenged.com"},
 					SecretName: "challenged.com",
 				},
@@ -1204,11 +1250,11 @@ func TestReconcileTLSEnabled(t *testing.T) {
 			servingclient.Get(ctx), listers.GetDomainMappingLister(), controller.GetEventRecorder(ctx), r,
 			controller.Options{ConfigStore: &testConfigStore{
 				config: &config.Config{
-					Network: &network.Config{
+					Network: &netcfg.Config{
 						DefaultIngressClass:     "the-ingress-class",
 						DefaultCertificateClass: "the-cert-class",
-						AutoTLS:                 true,
-						HTTPProtocol:            network.HTTPRedirected,
+						ExternalDomainTLS:       true,
+						HTTPProtocol:            netcfg.HTTPRedirected,
 						DefaultExternalScheme:   "http",
 					},
 				},
@@ -1271,11 +1317,11 @@ func TestReconcileTLSEnabledButDowngraded(t *testing.T) {
 			servingclient.Get(ctx), listers.GetDomainMappingLister(), controller.GetEventRecorder(ctx), r,
 			controller.Options{ConfigStore: &testConfigStore{
 				config: &config.Config{
-					Network: &network.Config{
+					Network: &netcfg.Config{
 						DefaultIngressClass:     "the-ingress-class",
 						DefaultCertificateClass: "the-cert-class",
-						AutoTLS:                 true,
-						HTTPProtocol:            network.HTTPEnabled,
+						ExternalDomainTLS:       true,
+						HTTPProtocol:            netcfg.HTTPEnabled,
 						DefaultExternalScheme:   "http",
 					},
 				},
@@ -1284,10 +1330,10 @@ func TestReconcileTLSEnabledButDowngraded(t *testing.T) {
 	}))
 }
 
-type domainMappingOption func(dm *v1alpha1.DomainMapping)
+type domainMappingOption func(dm *v1beta1.DomainMapping)
 
-func domainMapping(namespace, name string, opt ...domainMappingOption) *v1alpha1.DomainMapping {
-	dm := &v1alpha1.DomainMapping{
+func domainMapping(namespace, name string, opt ...domainMappingOption) *v1beta1.DomainMapping {
+	dm := &v1beta1.DomainMapping{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
@@ -1300,13 +1346,19 @@ func domainMapping(namespace, name string, opt ...domainMappingOption) *v1alpha1
 }
 
 func withAnnotations(ans map[string]string) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Annotations = ans
 	}
 }
 
+func withLabels(label map[string]string) domainMappingOption {
+	return func(dm *v1beta1.DomainMapping) {
+		dm.Labels = label
+	}
+}
+
 func withUID(uid types.UID) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.UID = uid
 	}
 }
@@ -1314,7 +1366,7 @@ func withUID(uid types.UID) domainMappingOption {
 type refOption func(*duckv1.KReference)
 
 func withRef(namespace, name string, opt ...refOption) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Spec.Ref.Namespace = namespace
 		dm.Spec.Ref.Name = name
 		dm.Spec.Ref.APIVersion = "serving.knative.dev/v1"
@@ -1334,13 +1386,13 @@ func withAPIVersionKind(apiVersion, kind string) refOption {
 }
 
 func withURL(scheme, host string) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Status.URL = &apis.URL{Scheme: scheme, Host: host}
 	}
 }
 
 func withAddress(scheme, host string) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Status.Address = &duckv1.Addressable{URL: &apis.URL{
 			Scheme: scheme,
 			Host:   host,
@@ -1348,99 +1400,99 @@ func withAddress(scheme, host string) domainMappingOption {
 	}
 }
 
-func withIngressNotConfigured(dm *v1alpha1.DomainMapping) {
+func withIngressNotConfigured(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkIngressNotConfigured()
 }
 
 func withPropagatedStatus(status netv1alpha1.IngressStatus) domainMappingOption {
-	return func(r *v1alpha1.DomainMapping) {
+	return func(r *v1beta1.DomainMapping) {
 		r.Status.PropagateIngressStatus(status)
 	}
 }
 
 func withTLSSecret(secretName string) domainMappingOption {
-	return func(r *v1alpha1.DomainMapping) {
-		r.Spec.TLS = &v1alpha1.SecretTLS{
+	return func(r *v1beta1.DomainMapping) {
+		r.Spec.TLS = &v1beta1.SecretTLS{
 			SecretName: secretName,
 		}
 	}
 }
 
-func withCertificateNotRequired(dm *v1alpha1.DomainMapping) {
-	dm.Status.MarkCertificateNotRequired(v1alpha1.TLSCertificateProvidedExternally)
+func withCertificateNotRequired(dm *v1beta1.DomainMapping) {
+	dm.Status.MarkCertificateNotRequired(v1beta1.TLSCertificateProvidedExternally)
 }
 
-func withInitDomainMappingConditions(dm *v1alpha1.DomainMapping) {
+func withInitDomainMappingConditions(dm *v1beta1.DomainMapping) {
 	dm.Status.InitializeConditions()
 }
 
-func withTLSNotEnabled(dm *v1alpha1.DomainMapping) {
-	dm.Status.MarkTLSNotEnabled(servingv1.AutoTLSNotEnabledMessage)
+func withTLSNotEnabled(dm *v1beta1.DomainMapping) {
+	dm.Status.MarkTLSNotEnabled(servingv1.ExternalDomainTLSNotEnabledMessage)
 }
 
-func withCertificateNotReady(dm *v1alpha1.DomainMapping) {
+func withCertificateNotReady(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkCertificateNotReady(dm.Name)
 }
 
-func withHTTPDowngraded(dm *v1alpha1.DomainMapping) {
+func withHTTPDowngraded(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkHTTPDowngrade(dm.Name)
 }
 
-func withCertificateReady(dm *v1alpha1.DomainMapping) {
+func withCertificateReady(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkCertificateReady(dm.Name)
 }
 
-func withCertificateFail(dm *v1alpha1.DomainMapping) {
+func withCertificateFail(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkCertificateProvisionFailed(dm.Name)
 }
 
-func withCertificateNotOwned(dm *v1alpha1.DomainMapping) {
+func withCertificateNotOwned(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkCertificateNotOwned(dm.Name)
 }
 
-func withDomainClaimNotOwned(dm *v1alpha1.DomainMapping) {
+func withDomainClaimNotOwned(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkDomainClaimNotOwned()
 }
 
-func withDomainClaimed(dm *v1alpha1.DomainMapping) {
+func withDomainClaimed(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkDomainClaimed()
 }
 
-func withReferenceResolved(dm *v1alpha1.DomainMapping) {
+func withReferenceResolved(dm *v1beta1.DomainMapping) {
 	dm.Status.MarkReferenceResolved()
 }
 
 func withReferenceNotResolved(message string) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Status.MarkReferenceNotResolved(message)
 	}
 }
 
 func withGeneration(generation int64) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.Generation = generation
 	}
 }
 
-func withObservedGeneration(dm *v1alpha1.DomainMapping) {
+func withObservedGeneration(dm *v1beta1.DomainMapping) {
 	dm.Status.ObservedGeneration = dm.Generation
 }
 
-func withFinalizer(dm *v1alpha1.DomainMapping) {
+func withFinalizer(dm *v1beta1.DomainMapping) {
 	dm.ObjectMeta.Finalizers = append(dm.ObjectMeta.Finalizers, "domainmappings.serving.knative.dev")
 }
 
 func withDeletionTimestamp(t *metav1.Time) domainMappingOption {
-	return func(dm *v1alpha1.DomainMapping) {
+	return func(dm *v1beta1.DomainMapping) {
 		dm.ObjectMeta.DeletionTimestamp = t
 	}
 }
 
-func ingress(dm *v1alpha1.DomainMapping, ingressClass string, opt ...IngressOption) *netv1alpha1.Ingress {
+func ingress(dm *v1beta1.DomainMapping, ingressClass string, opt ...IngressOption) *netv1alpha1.Ingress {
 	return ingressWithChallenges(dm, ingressClass, nil /* challenges */, opt...)
 }
 
-func ingressWithChallenges(dm *v1alpha1.DomainMapping, ingressClass string, challenges []netv1alpha1.HTTP01Challenge, opt ...IngressOption) *netv1alpha1.Ingress {
+func ingressWithChallenges(dm *v1beta1.DomainMapping, ingressClass string, challenges []netv1alpha1.HTTP01Challenge, opt ...IngressOption) *netv1alpha1.Ingress {
 	ing := resources.MakeIngress(dm, dm.Spec.Ref.Name, dm.Spec.Ref.Name+"."+dm.Spec.Ref.Namespace+".svc.cluster.local", ingressClass, netv1alpha1.HTTPOptionEnabled, nil /* tls */, challenges...)
 	for _, o := range opt {
 		o(ing)

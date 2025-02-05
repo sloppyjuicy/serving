@@ -2,7 +2,11 @@
 
 approvers:
 - technical-oversight-committee
-- api-core-wg-leads
+- serving-wg-leads
 
-labels:
-- area/API
+reviewers:
+- serving-writers
+- serving-reviewers
+
+options:
+  no_parent_owners: true

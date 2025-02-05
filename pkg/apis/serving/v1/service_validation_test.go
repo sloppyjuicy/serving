@@ -23,7 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	network "knative.dev/networking/pkg"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	"knative.dev/pkg/apis"
 	"knative.dev/pkg/ptr"
 	"knative.dev/serving/pkg/apis/config"
@@ -75,7 +75,7 @@ func TestServiceValidation(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "valid",
 				Labels: map[string]string{
-					network.VisibilityLabelKey: "cluster-local",
+					netapi.VisibilityLabelKey: "cluster-local",
 				},
 			},
 			Spec: ServiceSpec{
@@ -97,21 +97,6 @@ func TestServiceValidation(t *testing.T) {
 				RouteSpec:         goodRouteSpec,
 			},
 		},
-	}, {
-		name: "invalid visibility label value",
-		r: &Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "valid",
-				Labels: map[string]string{
-					network.VisibilityLabelKey: "bad-label",
-				},
-			},
-			Spec: ServiceSpec{
-				ConfigurationSpec: goodConfigSpec,
-				RouteSpec:         goodRouteSpec,
-			},
-		},
-		wantErr: apis.ErrInvalidValue("bad-label", "metadata.labels."+network.VisibilityLabelKey),
 	}, {
 		name: "valid release",
 		r: &Service{
@@ -295,6 +280,7 @@ func TestServiceValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := test.r.Validate(context.Background())
+			got = got.Filter(apis.ErrorLevel)
 			if !cmp.Equal(test.wantErr.Error(), got.Error()) {
 				t.Errorf("Validate (-want, +got) = %v",
 					cmp.Diff(test.wantErr.Error(), got.Error()))
@@ -542,6 +528,7 @@ func TestImmutableServiceFields(t *testing.T) {
 			ctx := context.Background()
 			ctx = apis.WithinUpdate(ctx, test.old)
 			got := test.new.Validate(ctx)
+			got = got.Filter(apis.ErrorLevel)
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("Validate (-want, +got) = %v\nwant: %v\ngot: %v",
 					diff, test.want, got)
@@ -681,7 +668,7 @@ func TestServiceSubresourceUpdate(t *testing.T) {
 			ctx := context.Background()
 			ctx = apis.WithinUpdate(ctx, test.service)
 			ctx = apis.WithinSubResourceUpdate(ctx, test.service, test.subresource)
-			if diff := cmp.Diff(test.want.Error(), test.service.Validate(ctx).Error()); diff != "" {
+			if diff := cmp.Diff(test.want.Error(), test.service.Validate(ctx).Filter(apis.ErrorLevel).Error()); diff != "" {
 				t.Error("Validate (-want, +got) =", diff)
 			}
 		})
@@ -744,8 +731,10 @@ func TestServiceAnnotationUpdate(t *testing.T) {
 			},
 			Spec: getServiceSpec("helloworld:foo"),
 		},
-		want: (&apis.FieldError{Message: "annotation value is immutable",
-			Paths: []string{serving.CreatorAnnotation}}).ViaField("metadata.annotations"),
+		want: (&apis.FieldError{
+			Message: "annotation value is immutable",
+			Paths:   []string{serving.CreatorAnnotation},
+		}).ViaField("metadata.annotations"),
 	}, {
 		name: "update lastModifier without spec changes",
 		this: &Service{
@@ -797,7 +786,7 @@ func TestServiceAnnotationUpdate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			ctx = apis.WithinUpdate(ctx, test.prev)
-			if diff := cmp.Diff(test.want.Error(), test.this.Validate(ctx).Error()); diff != "" {
+			if diff := cmp.Diff(test.want.Error(), test.this.Validate(ctx).Filter(apis.ErrorLevel).Error()); diff != "" {
 				t.Error("Validate (-want, +got) =", diff)
 			}
 		})

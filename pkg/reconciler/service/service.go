@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"go.uber.org/zap"
@@ -53,17 +52,30 @@ type Reconciler struct {
 	routeLister         listers.RouteLister
 }
 
+// NewReconciler creates the reference to the Reconciler based on clientset.Interface, listers.ConfigurationLister,
+// listers.RevisionLister and listers.RouteLister.
+func NewReconciler(client clientset.Interface, configurationLister listers.ConfigurationLister,
+	revisionLister listers.RevisionLister, routeLister listers.RouteLister,
+) *Reconciler {
+	return &Reconciler{
+		client:              client,
+		configurationLister: configurationLister,
+		revisionLister:      revisionLister,
+		routeLister:         routeLister,
+	}
+}
+
 // Check that our Reconciler implements ksvcreconciler.Interface
 var _ ksvcreconciler.Interface = (*Reconciler)(nil)
 
 // ReconcileKind implements Interface.ReconcileKind.
 func (c *Reconciler) ReconcileKind(ctx context.Context, service *v1.Service) pkgreconciler.Event {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, pkgreconciler.DefaultTimeout)
 	defer cancel()
 
 	logger := logging.FromContext(ctx)
 
-	config, err := c.config(ctx, service)
+	config, err := c.Config(ctx, service)
 	if err != nil {
 		return err
 	}
@@ -114,7 +126,7 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, service *v1.Service) pkg
 	return nil
 }
 
-func (c *Reconciler) config(ctx context.Context, service *v1.Service) (*v1.Configuration, error) {
+func (c *Reconciler) Config(ctx context.Context, service *v1.Service) (*v1.Configuration, error) {
 	recorder := controller.GetEventRecorder(ctx)
 	configName := resourcenames.Configuration(service)
 	config, err := c.configurationLister.Configurations(service.Namespace).Get(configName)

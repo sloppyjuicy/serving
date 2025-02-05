@@ -324,6 +324,18 @@ func TestScaler(t *testing.T) {
 			paMarkActivating(k, time.Now().Add(-(activationTimeout + time.Second)))
 		},
 	}, {
+		label:         "scale to zero while activating after revision deadline exceeded",
+		startReplicas: 1,
+		scaleTo:       0,
+		wantReplicas:  0,
+		wantScaling:   true,
+		paMutation: func(k *autoscalingv1alpha1.PodAutoscaler) {
+			progressDeadline := "5s"
+			k.Annotations[serving.ProgressDeadlineAnnotationKey] = progressDeadline
+			customActivationTimeout, _ := time.ParseDuration(progressDeadline)
+			paMarkActivating(k, time.Now().Add(-(customActivationTimeout + +activationTimeoutBuffer + time.Second)))
+		},
+	}, {
 		label:         "scale down to minScale before grace period",
 		startReplicas: 10,
 		scaleTo:       0,
@@ -345,6 +357,33 @@ func TestScaler(t *testing.T) {
 			paMarkInactive(k, time.Now().Add(-gracePeriod))
 			WithReachabilityReachable(k)
 		},
+	}, {
+		label:         "scale to zero ignore last pod retention if  revision is unreachable",
+		startReplicas: 1,
+		scaleTo:       0,
+		wantReplicas:  0,
+		wantScaling:   true,
+		paMutation: func(k *autoscalingv1alpha1.PodAutoscaler) {
+			paMarkInactive(k, time.Now().Add(-gracePeriod))
+			WithReachabilityUnreachable(k)
+		},
+		configMutator: func(c *config.Config) {
+			c.Autoscaler.ScaleToZeroPodRetentionPeriod = 10 * gracePeriod
+		},
+	}, {
+		label:         "can't scale to zero if revision is unreachable, but before deadline",
+		startReplicas: 1,
+		scaleTo:       0,
+		wantReplicas:  0,
+		wantScaling:   false,
+		paMutation: func(k *autoscalingv1alpha1.PodAutoscaler) {
+			paMarkInactive(k, time.Now().Add(-gracePeriod+time.Second))
+			WithReachabilityUnreachable(k)
+		},
+		configMutator: func(c *config.Config) {
+			c.Autoscaler.ScaleToZeroPodRetentionPeriod = 10 * gracePeriod
+		},
+		wantCBCount: 1,
 	}, {
 		label:         "ignore minScale if unreachable",
 		startReplicas: 10,
@@ -609,7 +648,6 @@ func TestDisableScaleToZero(t *testing.T) {
 			conf.Autoscaler.EnableScaleToZero = false
 			ctx = config.ToContext(ctx, conf)
 			desiredScale, err := revisionScaler.scale(ctx, pa, nil /*sks doesn't matter in this test*/, test.scaleTo)
-
 			if err != nil {
 				t.Error("Scale got an unexpected error:", err)
 			}
@@ -628,7 +666,7 @@ func TestDisableScaleToZero(t *testing.T) {
 
 func newKPA(ctx context.Context, t *testing.T, servingClient clientset.Interface, revision *v1.Revision) *autoscalingv1alpha1.PodAutoscaler {
 	t.Helper()
-	pa := revisionresources.MakePA(revision)
+	pa := revisionresources.MakePA(revision, nil)
 	pa.Status.InitializeConditions()
 	_, err := servingClient.AutoscalingV1alpha1().PodAutoscalers(testNamespace).Create(ctx, pa, metav1.CreateOptions{})
 	if err != nil {
@@ -764,7 +802,7 @@ func TestActivatorProbe(t *testing.T) {
 		name: "ok",
 		rt: func(r *http.Request) (*http.Response, error) {
 			rsp := httptest.NewRecorder()
-			rsp.Write([]byte(activator.Name))
+			rsp.WriteString(activator.Name)
 			return rsp.Result(), nil
 		},
 		wantRes: true,
@@ -773,7 +811,7 @@ func TestActivatorProbe(t *testing.T) {
 		rt: func(r *http.Request) (*http.Response, error) {
 			rsp := httptest.NewRecorder()
 			rsp.Code = http.StatusBadRequest
-			rsp.Write([]byte("wrong header, I guess?"))
+			rsp.WriteString("wrong header, I guess?")
 			return rsp.Result(), nil
 		},
 		wantErr: true,
@@ -781,7 +819,7 @@ func TestActivatorProbe(t *testing.T) {
 		name: "wrong body",
 		rt: func(r *http.Request) (*http.Response, error) {
 			rsp := httptest.NewRecorder()
-			rsp.Write([]byte("haxoorprober"))
+			rsp.WriteString("haxoorprober")
 			return rsp.Result(), nil
 		},
 		wantErr: true,

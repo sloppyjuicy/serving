@@ -18,6 +18,51 @@ function is_ingress_class() {
   [[ "${INGRESS_CLASS}" == *"${1}"* ]]
 }
 
+function stage_contour_gateway_api_resources() {
+  # This installs a contour version that works with the v1 gateway api
+  header "Staging Gateway API Resources - Contour"
+
+  local gateway_dir="${E2E_YAML_DIR}/gateway-api/install-contour"
+  mkdir -p "${gateway_dir}"
+
+  local CONTOUR_VERSION=v1.29.1
+  echo "Downloading Contour Gateway Provisioner ${CONTOUR_VERSION}..."
+  local CONTOUR_FILES=(
+    "examples/contour/01-crds.yaml"
+    "examples/gateway-provisioner/00-common.yaml"
+    "examples/gateway-provisioner/01-roles.yaml"
+    "examples/gateway-provisioner/02-rolebindings.yaml"
+    "examples/gateway-provisioner/03-gateway-provisioner.yaml"
+  )
+  for file in ${CONTOUR_FILES[@]}; do
+  curl -s \
+    "https://raw.githubusercontent.com/projectcontour/contour/${CONTOUR_VERSION}/${file}" > "${gateway_dir}/$(basename ${file})"
+  done
+}
+
+function stage_istio_gateway_api_resources() {
+  # This installs an istio version that works with the v1 gateway api
+  header "Staging Gateway API Resources - Istio"
+
+  local gateway_dir="${E2E_YAML_DIR}/gateway-api/install-istio"
+  mkdir -p "${gateway_dir}"
+
+  # TODO: if we switch to istio 1.12 we can reuse stage_istio_head
+  curl -sL https://istio.io/downloadIstioctl | ISTIO_VERSION=1.22.1 sh -
+
+  local params="--set values.global.proxy.clusterDomain=${CLUSTER_DOMAIN}"
+
+  cat <<EOF > "${gateway_dir}/istio.yaml"
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+---
+EOF
+
+  $HOME/.istioctl/bin/istioctl manifest generate $params >> "${gateway_dir}/istio.yaml"
+}
+
 function stage_istio_head() {
   header "Staging Istio YAML (HEAD)"
   local istio_head_dir="${E2E_YAML_DIR}/istio/HEAD/install"
@@ -31,7 +76,7 @@ function stage_istio_latest() {
   mkdir -p "${istio_latest_dir}"
 
   download_net_istio_yamls \
-    "https://github.com/knative-sandbox/net-istio/releases/download/${LATEST_NET_ISTIO_RELEASE_VERSION}/net-istio.yaml" \
+    "https://github.com/knative-extensions/net-istio/releases/download/${LATEST_NET_ISTIO_RELEASE_VERSION}/net-istio.yaml" \
     "${istio_latest_dir}"
 }
 
@@ -77,19 +122,19 @@ function net_istio_file_url() {
   local sha="$1"
   local file="$2"
 
-  local profile="istio"
+  local profile="istio-ci-no-mesh"
+
   if (( KIND )); then
-    profile+="-kind"
-  else
-    profile+="-ci"
-  fi
-  if [[ $MESH -eq 0 ]]; then
-    profile+="-no"
+    if (( AMBIENT )); then
+      profile="istio-kind-ambient"
+    else
+      profile="istio-kind-no-mesh"
+    fi
+  elif (( MESH )); then
+    profile="istio-ci-mesh"
   fi
 
-  profile+="-mesh"
-
-  echo "https://raw.githubusercontent.com/knative-sandbox/net-istio/${sha}/third_party/istio-${ISTIO_VERSION}/${profile}/${file}"
+  echo "https://raw.githubusercontent.com/knative-extensions/net-istio/${sha}/third_party/istio-${ISTIO_VERSION}/${profile}/${file}"
 }
 
 function setup_ingress_env_vars() {
@@ -104,6 +149,15 @@ function setup_ingress_env_vars() {
   if is_ingress_class contour; then
     export GATEWAY_OVERRIDE=envoy
     export GATEWAY_NAMESPACE_OVERRIDE=contour-external
+  fi
+  if is_ingress_class gateway-api; then
+    if [[ "${GATEWAY_API_IMPLEMENTATION}" == "contour" ]]; then
+      export GATEWAY_OVERRIDE=envoy-knative-external
+      export GATEWAY_NAMESPACE_OVERRIDE=contour-external
+    else
+      export GATEWAY_OVERRIDE=istio-ingressgateway
+      export GATEWAY_NAMESPACE_OVERRIDE=istio-system
+    fi
   fi
 }
 

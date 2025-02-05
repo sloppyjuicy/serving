@@ -68,8 +68,8 @@ func New(
 	namespace, revision string,
 	metricClient metrics.MetricClient,
 	podCounter resources.EndpointsCounter,
-	deciderSpec *DeciderSpec) UniScaler {
-
+	deciderSpec *DeciderSpec,
+) UniScaler {
 	var delayer *max.TimeWindow
 	if deciderSpec.ScaleDownDelay > 0 {
 		delayer = max.NewTimeWindow(deciderSpec.ScaleDownDelay, tickInterval)
@@ -85,8 +85,8 @@ func newAutoscaler(
 	metricClient metrics.MetricClient,
 	podCounter podCounter,
 	deciderSpec *DeciderSpec,
-	delayWindow *max.TimeWindow) *autoscaler {
-
+	delayWindow *max.TimeWindow,
+) *autoscaler {
 	// We always start in the panic mode, if the deployment is scaled up over 1 pod.
 	// If the scale is 0 or 1, normal Autoscaler behavior is fine.
 	// When Autoscaler restarts we lose metric history, which causes us to
@@ -120,7 +120,7 @@ func newAutoscaler(
 		delayWindow: delayWindow,
 
 		panicTime:    pt,
-		maxPanicPods: int32(curC),
+		maxPanicPods: int32(curC), //nolint:gosec // k8s replica count is bounded by int32
 	}
 }
 
@@ -197,6 +197,16 @@ func (a *autoscaler) Scale(logger *zap.SugaredLogger, now time.Time) ScaleResult
 	// We want to keep desired pod count in the  [maxScaleDown, maxScaleUp] range.
 	desiredStablePodCount := int32(math.Min(math.Max(dspc, maxScaleDown), maxScaleUp))
 	desiredPanicPodCount := int32(math.Min(math.Max(dppc, maxScaleDown), maxScaleUp))
+
+	//	If ActivationScale > 1, then adjust the desired pod counts
+	if a.deciderSpec.ActivationScale > 1 {
+		if dspc > 0 && a.deciderSpec.ActivationScale > desiredStablePodCount {
+			desiredStablePodCount = a.deciderSpec.ActivationScale
+		}
+		if dppc > 0 && a.deciderSpec.ActivationScale > desiredPanicPodCount {
+			desiredPanicPodCount = a.deciderSpec.ActivationScale
+		}
+	}
 
 	isOverPanicThreshold := dppc/readyPodsCount >= spec.PanicThreshold
 
@@ -284,7 +294,7 @@ func (a *autoscaler) Scale(logger *zap.SugaredLogger, now time.Time) ScaleResult
 			excessBurstCapacityM.M(excessBCF),
 			desiredPodCountM.M(int64(desiredPodCount)),
 			stableRPSM.M(observedStableValue),
-			panicRPSM.M(observedStableValue),
+			panicRPSM.M(observedPanicValue),
 			targetRPSM.M(spec.TargetValue),
 		)
 	default:

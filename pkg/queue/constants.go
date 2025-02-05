@@ -16,6 +16,7 @@ limitations under the License.
 
 package queue
 
+//nolint:gosec // Volume Mount Points and Filenames
 const (
 	// Name is the name of the component.
 	Name = "queue"
@@ -26,4 +27,16 @@ const (
 	// Main usage is to delay the termination of user-container until all
 	// accepted requests have been processed.
 	RequestQueueDrainPath = "/wait-for-drain"
+
+	// CertDirectory is the name of the directory path where certificates are stored.
+	CertDirectory = "/var/lib/knative/certs"
+
+	// PodInfoDirectory is the name of the directory path where podinfo are stored.
+	PodInfoDirectory = "/etc/podinfo"
+
+	// TokenDirectory is the name of the directory path where tokens are stored.
+	TokenDirectory = "/var/run/secrets/tokens"
+
+	// PodInfoAnnotationsFilename is the file name of the annotations in PodInfoDirectory.
+	PodInfoAnnotationsFilename = "annotations"
 )

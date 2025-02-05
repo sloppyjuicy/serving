@@ -17,7 +17,6 @@ limitations under the License.
 package generators
 
 import (
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -27,7 +26,7 @@ import (
 	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	informergenargs "knative.dev/pkg/codegen/cmd/injection-gen/args"
 )
@@ -44,26 +43,21 @@ func Packages(context *generator.Context, arguments *args.GeneratorArgs) generat
 		klog.Fatalf("Wrong CustomArgs type: %T", arguments.CustomArgs)
 	}
 
-	versionPackagePath := filepath.Join(arguments.OutputPackagePath)
+	versionPackagePath := filepath.Clean(arguments.OutputPackagePath)
 
 	var packageList generator.Packages
 
-	groupVersions := make(map[string]clientgentypes.GroupVersions)
 	groupGoNames := make(map[string]string)
-	groupVersionTypes := make(map[string]map[clientgentypes.Version][]*types.Type)
 	for _, inputDir := range arguments.InputDirs {
 		p := context.Universe.Package(vendorless(inputDir))
 
 		var gv clientgentypes.GroupVersion
-		var targetGroupVersions map[string]clientgentypes.GroupVersions
 
 		parts := strings.Split(p.Path, "/")
 		gv.Group = clientgentypes.Group(parts[len(parts)-2])
 		gv.Version = clientgentypes.Version(parts[len(parts)-1])
-		targetGroupVersions = groupVersions
 
 		groupPackageName := gv.Group.NonEmpty()
-		gvPackage := path.Clean(p.Path)
 
 		// If there's a comment of the form "// +groupName=somegroup" or
 		// "// +groupName=somegroup.foo.bar.io", use the first field (somegroup) as the name of the
@@ -82,7 +76,6 @@ func Packages(context *generator.Context, arguments *args.GeneratorArgs) generat
 		var typesWithInformers []*types.Type
 		var duckTypes []*types.Type
 		var reconcilerTypes []*types.Type
-		var clientTypes []*types.Type
 		for _, t := range p.Types {
 			tags := MustParseClientGenTags(append(t.SecondClosestCommentLines, t.CommentLines...))
 			if tags.NeedsInformerInjection() {
@@ -94,26 +87,7 @@ func Packages(context *generator.Context, arguments *args.GeneratorArgs) generat
 			if tags.NeedsReconciler(t, customArgs) {
 				reconcilerTypes = append(reconcilerTypes, t)
 			}
-			if tags.GenerateClient {
-				clientTypes = append(clientTypes, t)
-			}
 		}
-
-		groupVersionsEntry, ok := targetGroupVersions[groupPackageName]
-		if !ok {
-			groupVersionsEntry = clientgentypes.GroupVersions{
-				PackageName: groupPackageName,
-				Group:       gv.Group,
-			}
-		}
-		groupVersionsEntry.Versions = append(groupVersionsEntry.Versions, clientgentypes.PackageVersion{Version: gv.Version, Package: gvPackage})
-		targetGroupVersions[groupPackageName] = groupVersionsEntry
-		verTypes, ok := groupVersionTypes[groupPackageName]
-		if !ok {
-			verTypes = make(map[clientgentypes.Version][]*types.Type)
-		}
-		verTypes[gv.Version] = clientTypes
-		groupVersionTypes[groupPackageName] = verTypes
 
 		if len(typesWithInformers) != 0 {
 			orderer := namer.Orderer{Namer: namer.NewPrivateNamer(0)}
@@ -141,7 +115,7 @@ func Packages(context *generator.Context, arguments *args.GeneratorArgs) generat
 	}
 
 	// Generate the client and fake.
-	packageList = append(packageList, versionClientsPackages(versionPackagePath, boilerplate, customArgs, groupVersions, groupGoNames, groupVersionTypes)...)
+	packageList = append(packageList, versionClientsPackages(versionPackagePath, boilerplate, customArgs)...)
 
 	// Generate the informer factory and fake.
 	packageList = append(packageList, versionFactoryPackages(versionPackagePath, boilerplate, customArgs)...)
@@ -251,7 +225,7 @@ func typedInformerPackage(groupPkgName string, gv clientgentypes.GroupVersion, e
 	return filepath.Join(externalVersionsInformersPackage, groupPkgName, gv.Version.String())
 }
 
-func versionClientsPackages(basePackage string, boilerplate []byte, customArgs *informergenargs.CustomArgs, groupVersions map[string]clientgentypes.GroupVersions, groupGoNames map[string]string, groupVersionTypes map[string]map[clientgentypes.Version][]*types.Type) []generator.Package {
+func versionClientsPackages(basePackage string, boilerplate []byte, customArgs *informergenargs.CustomArgs) []generator.Package {
 	packagePath := filepath.Join(basePackage, "client")
 
 	return []generator.Package{
@@ -266,10 +240,6 @@ func versionClientsPackages(basePackage string, boilerplate []byte, customArgs *
 					DefaultGen: generator.DefaultGen{
 						OptionalName: "client",
 					},
-
-					groupVersions:     groupVersions,
-					groupGoNames:      groupGoNames,
-					groupVersionTypes: groupVersionTypes,
 
 					outputPackage:    packagePath,
 					imports:          generator.NewImportTracker(),
@@ -415,13 +385,10 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 	filteredFactoryPackagePath := filepath.Join(basePackage, "informers", "factory", "filtered")
 
 	packagePath := filepath.Join(basePackage, "informers", groupPkgName, strings.ToLower(gv.Version.NonEmpty()))
-	listerPackagePath := filepath.Join(customArgs.ListersPackage, groupPkgName, strings.ToLower(gv.Version.NonEmpty()))
 
 	vers := make([]generator.Package, 0, 2*len(typesToGenerate))
 
 	for _, t := range typesToGenerate {
-		// Fix for golang iterator bug.
-		t := t
 		packagePath := packagePath + "/" + strings.ToLower(t.Name.Name)
 		typedInformerPackage := typedInformerPackage(groupPkgName, gv, customArgs.ExternalVersionsInformersPackage)
 
@@ -443,9 +410,7 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 					imports:                     generator.NewImportTracker(),
 					typedInformerPackage:        typedInformerPackage,
 					groupInformerFactoryPackage: factoryPackagePath,
-					clientSetPackage:            customArgs.VersionedClientSetPackage,
-					injectionClientSetPackage:   filepath.Join(basePackage, "client"),
-					listerPkg:                   listerPackagePath,
+					disableInformerInit:         customArgs.DisableInformerInit,
 				})
 				return generators
 			},
@@ -499,9 +464,6 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 					imports:                     generator.NewImportTracker(),
 					typedInformerPackage:        typedInformerPackage,
 					groupInformerFactoryPackage: filteredFactoryPackagePath,
-					clientSetPackage:            customArgs.VersionedClientSetPackage,
-					injectionClientSetPackage:   filepath.Join(basePackage, "client"),
-					listerPkg:                   listerPackagePath,
 				})
 				return generators
 			},
@@ -537,7 +499,6 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 				return tags.NeedsInformerInjection()
 			},
 		})
-
 	}
 	return vers
 }
@@ -549,8 +510,6 @@ func reconcilerPackages(basePackage string, groupPkgName string, gv clientgentyp
 	vers := make([]generator.Package, 0, 4*len(typesToGenerate))
 
 	for _, t := range typesToGenerate {
-		// Fix for golang iterator bug.
-		t := t
 		extracted := extractCommentTags(t)
 		reconcilerClasses, hasReconcilerClass := extractReconcilerClassesTag(extracted)
 		nonNamespaced := isNonNamespaced(extracted)
@@ -713,7 +672,6 @@ func versionDuckPackages(basePackage string, groupPkgName string, gv clientgenty
 
 	for _, t := range typesToGenerate {
 		// Fix for golang iterator bug.
-		t := t
 		packagePath := filepath.Join(packagePath, strings.ToLower(t.Name.Name))
 
 		// Impl

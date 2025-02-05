@@ -17,20 +17,24 @@ limitations under the License.
 package health
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"go.uber.org/atomic"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 func TestTCPProbe(t *testing.T) {
@@ -63,20 +67,24 @@ func TestHTTPProbeSuccess(t *testing.T) {
 		Value: "Testval",
 	}
 	var gotPath string
+	var gotQuery string
 	const expectedPath = "/health"
+	const expectedQuery = "foo=bar"
+	const configPath = expectedPath + "?" + expectedQuery
 	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if v := r.Header.Get(expectedHeader.Name); v != "" {
 			gotHeader = corev1.HTTPHeader{Name: expectedHeader.Name, Value: v}
 		}
-		if v := r.Header.Get(network.UserAgentKey); strings.HasPrefix(v, network.KubeProbeUAPrefix) {
+		if v := r.Header.Get(netheader.UserAgentKey); strings.HasPrefix(v, netheader.KubeProbeUAPrefix) {
 			gotKubeletHeader = true
 		}
 		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
 	})
 
 	action := newHTTPGetAction(t, server.URL)
-	action.Path = expectedPath
+	action.Path = configPath
 	action.HTTPHeaders = []corev1.HTTPHeader{expectedHeader}
 
 	config := HTTPProbeConfigOptions{
@@ -98,6 +106,9 @@ func TestHTTPProbeSuccess(t *testing.T) {
 	if !cmp.Equal(gotPath, expectedPath) {
 		t.Errorf("Path = %s, want: %s", gotPath, expectedPath)
 	}
+	if !cmp.Equal(gotQuery, expectedQuery) {
+		t.Errorf("Query = %s, want: %s", gotQuery, expectedQuery)
+	}
 	// Close the server so probing fails afterwards.
 	server.Close()
 	if err := HTTPProbe(config); err == nil {
@@ -114,7 +125,7 @@ func TestHTTPProbeNoAutoHTTP2IfDisabled(t *testing.T) {
 
 	var callCount atomic.Int32
 	server := newH2cTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		count := callCount.Inc()
+		count := callCount.Add(1)
 		if count == 1 {
 			// This is the h2c handshake, we won't do anything.
 			for key, value := range h2cHeaders {
@@ -154,7 +165,7 @@ func TestHTTPProbeAutoHTTP2(t *testing.T) {
 	var callCount atomic.Int32
 
 	server := newH2cTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		count := callCount.Inc()
+		count := callCount.Add(1)
 		if count == 1 {
 			// This is the h2c handshake, we won't do anything.
 			for key, value := range h2cHeaders {
@@ -258,6 +269,41 @@ func TestHTTPProbeResponseErrorFailure(t *testing.T) {
 	}
 }
 
+func TestGRPCProbeSuccess(t *testing.T) {
+	// use ephemeral port to prevent port conflict
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	grpc_health_v1.RegisterHealthServer(s, &grpcHealthServer{})
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- s.Serve(lis)
+	}()
+
+	assignedPort := lis.Addr().(*net.TCPAddr).Port
+	gRPCAction := newGRPCAction(t, assignedPort)
+	config := GRPCProbeConfigOptions{
+		Timeout:    time.Second,
+		GRPCAction: gRPCAction,
+	}
+
+	if err := GRPCProbe(config); err != nil {
+		t.Error("Expected probe to succeed but it failed with", err)
+	}
+
+	// explicitly stop grpc server
+	s.Stop()
+
+	if grpcServerErr := <-errChan; grpcServerErr != nil {
+		t.Fatalf("Failed to run gRPC test server %v", grpcServerErr)
+	}
+	close(errChan)
+}
+
 func newH2cTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	h2s := &http2.Server{}
 	t.Helper()
@@ -293,4 +339,20 @@ func newHTTPGetAction(t *testing.T, serverURL string) *corev1.HTTPGetAction {
 		// We only ever use httptest.NewServer which is http.
 		Scheme: corev1.URISchemeHTTP,
 	}
+}
+
+func newGRPCAction(t *testing.T, port int) *corev1.GRPCAction {
+	t.Helper()
+
+	return &corev1.GRPCAction{
+		Port: int32(port),
+	}
+}
+
+type grpcHealthServer struct {
+	grpc_health_v1.UnimplementedHealthServer
+}
+
+func (s *grpcHealthServer) Check(_ context.Context, _ *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
 }

@@ -215,7 +215,7 @@ func TestAutoscalerMetricsWithRPS(t *testing.T) {
 	expectScale(t, a, time.Now().Add(61*time.Second), ScaleResult{10, ebc, true})
 	wantMetrics := []metricstest.Metric{
 		metricstest.FloatMetric(stableRPSM.Name(), 100, nil).WithResource(wantResource),
-		metricstest.FloatMetric(panicRPSM.Name(), 100, nil).WithResource(wantResource),
+		metricstest.FloatMetric(panicRPSM.Name(), 99, nil).WithResource(wantResource),
 		metricstest.IntMetric(desiredPodCountM.Name(), 10, nil).WithResource(wantResource),
 		metricstest.FloatMetric(targetRPSM.Name(), spec.TargetValue, nil).WithResource(wantResource),
 		metricstest.FloatMetric(excessBurstCapacityM.Name(), float64(ebc), nil).WithResource(wantResource),
@@ -319,6 +319,16 @@ func TestAutoscalerStableModeNoTrafficScaleToZero(t *testing.T) {
 
 	metrics.StableConcurrency = 0.0
 	expectScale(t, a, time.Now(), ScaleResult{0, expectedEBC(10, 75, 0, 1), true})
+}
+
+func TestAutoscalerActivationScale(t *testing.T) {
+	metrics := &metricClient{StableConcurrency: 0, PanicConcurrency: 0}
+	a := newTestAutoscalerNoPC(10, 75, metrics)
+	a.deciderSpec.ActivationScale = int32(2)
+	expectScale(t, a, time.Now(), ScaleResult{0, expectedEBC(10, 75, 0, 1), true})
+
+	metrics.StableConcurrency = 1.0
+	expectScale(t, a, time.Now(), ScaleResult{2, expectedEBC(10, 75, 0, 1), true})
 }
 
 // QPS is increasing exponentially. Each scaling event bring concurrency
@@ -556,13 +566,15 @@ func TestAutoscalerUpdateTarget(t *testing.T) {
 
 // For table tests and tests that don't care about changing scale.
 func newTestAutoscalerNoPC(targetValue, targetBurstCapacity float64,
-	metrics metrics.MetricClient) *autoscaler {
+	metrics metrics.MetricClient,
+) *autoscaler {
 	a, _ := newTestAutoscaler(targetValue, targetBurstCapacity, metrics)
 	return a
 }
 
 func newTestAutoscaler(targetValue, targetBurstCapacity float64,
-	metrics metrics.MetricClient) (*autoscaler, *fakePodCounter) {
+	metrics metrics.MetricClient,
+) (*autoscaler, *fakePodCounter) {
 	return newTestAutoscalerWithScalingMetric(targetValue, targetBurstCapacity,
 		metrics, "concurrency", false /*panic*/)
 }
@@ -623,7 +635,7 @@ func TestStartInPanicMode(t *testing.T) {
 	}
 
 	pc := &fakePodCounter{}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		pc.readyCount = i
 		a := newAutoscaler(context.Background(), testNamespace, testRevision, metrics, pc, deciderSpec, nil)
 		if !a.panicTime.IsZero() {
@@ -721,7 +733,7 @@ func BenchmarkAutoscaler(b *testing.B) {
 	a := newTestAutoscalerNoPC(10, 101, metrics)
 	now := time.Now()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		a.Scale(logtesting.TestLogger(b), now)
 	}
 }

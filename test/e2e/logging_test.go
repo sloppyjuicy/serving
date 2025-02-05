@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/metrics"
 	"knative.dev/pkg/system"
 	pkgtest "knative.dev/pkg/test"
@@ -81,7 +81,8 @@ func TestRequestLogs(t *testing.T) {
 		rtesting.WithConfigAnnotations(map[string]string{
 			autoscaling.MinScaleAnnotationKey: "1",
 			autoscaling.MaxScaleAnnotationKey: "1",
-		})}...)
+		}),
+	}...)
 	if err != nil {
 		t.Fatalf("Failed to create initial Service: %q: %v", names.Service, err)
 	}
@@ -109,7 +110,7 @@ func TestRequestLogs(t *testing.T) {
 		// A request was sent to / in CheckEndpointState.
 		if err := waitForLog(t, clients, pod.Namespace, pod.Name, "queue-proxy", func(log logLine) bool {
 			return log.HTTPRequest.RequestURL == "/" &&
-				log.HTTPRequest.UserAgent != network.QueueProxyUserAgent
+				log.HTTPRequest.UserAgent != netheader.QueueProxyUserAgent
 		}); err != nil {
 			t.Fatal("Got error waiting for normal request logs:", err)
 		}
@@ -122,7 +123,7 @@ func TestRequestLogs(t *testing.T) {
 		// Health check requests are sent to / with a specific userAgent value periodically.
 		if err := waitForLog(t, clients, pod.Namespace, pod.Name, "queue-proxy", func(log logLine) bool {
 			return log.HTTPRequest.RequestURL == "/" &&
-				strings.HasPrefix(log.HTTPRequest.UserAgent, network.KubeProbeUAPrefix)
+				strings.HasPrefix(log.HTTPRequest.UserAgent, netheader.KubeProbeUAPrefix)
 		}); err != nil {
 			t.Fatal("Got error waiting for health check log:", err)
 		}
@@ -135,7 +136,6 @@ func theOnlyPod(clients *test.Clients, ns, rev string) (corev1.Pod, error) {
 	pods, err := clients.KubeClient.CoreV1().Pods(ns).List(context.Background(), metav1.ListOptions{
 		LabelSelector: labels.Set{"app": rev}.String(),
 	})
-
 	if err != nil {
 		return corev1.Pod{}, err
 	}
@@ -150,7 +150,7 @@ func theOnlyPod(clients *test.Clients, ns, rev string) (corev1.Pod, error) {
 // waitForLog fetches the logs from a container of a pod decided by the given parameters
 // until the given condition is meet or timeout. Most of knative logs are in json format.
 func waitForLog(t *testing.T, clients *test.Clients, ns, podName, container string, condition func(log logLine) bool) error {
-	return wait.PollImmediate(time.Second, 30*time.Second, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), time.Second, 30*time.Second, true, func(context.Context) (bool, error) {
 		req := clients.KubeClient.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{
 			Container: container,
 		})

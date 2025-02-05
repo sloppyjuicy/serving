@@ -23,10 +23,11 @@ import (
 	"testing"
 
 	"go.opencensus.io/resource"
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/metrics/metricstest"
-	_ "knative.dev/pkg/metrics/testing"
 	"knative.dev/serving/pkg/metrics"
+
+	_ "knative.dev/pkg/metrics/testing"
 )
 
 const targetURI = "http://example.com"
@@ -71,7 +72,7 @@ func TestRequestMetricsHandler(t *testing.T) {
 	metricstest.AssertMetric(t, metricstest.DistributionCountOnlyMetric("request_latencies", 1, wantTags).WithResource(wantResource))
 
 	// A probe request should not be recorded.
-	req.Header.Set(network.ProbeHeaderName, "activator")
+	req.Header.Set(netheader.ProbeKey, "activator")
 	handler.ServeHTTP(resp, req)
 	metricstest.AssertMetric(t, metricstest.IntMetric("request_count", 1, wantTags).WithResource(wantResource))
 	metricstest.AssertMetric(t, metricstest.DistributionCountOnlyMetric("request_latencies", 1, wantTags).WithResource(wantResource))
@@ -87,7 +88,7 @@ func TestRequestMetricsHandlerWithEnablingTagOnRequestMetrics(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, targetURI, bytes.NewBufferString("test"))
-	req.Header.Set(network.TagHeaderName, "test-tag")
+	req.Header.Set(netheader.RouteTagKey, "test-tag")
 
 	handler.ServeHTTP(resp, req)
 
@@ -113,24 +114,24 @@ func TestRequestMetricsHandlerWithEnablingTagOnRequestMetrics(t *testing.T) {
 	// Testing for default route
 	reset()
 	handler, _ = NewRequestMetricsHandler(baseHandler, "ns", "svc", "cfg", "rev", "pod")
-	req.Header.Del(network.TagHeaderName)
-	req.Header.Set(network.DefaultRouteHeaderName, "true")
+	req.Header.Del(netheader.RouteTagKey)
+	req.Header.Set(netheader.DefaultRouteKey, "true")
 	handler.ServeHTTP(resp, req)
 	wantTags["route_tag"] = defaultTagName
 	metricstest.AssertMetric(t, metricstest.IntMetric("request_count", 1, wantTags).WithResource(wantResource))
 
 	reset()
 	handler, _ = NewRequestMetricsHandler(baseHandler, "ns", "svc", "cfg", "rev", "pod")
-	req.Header.Set(network.TagHeaderName, "test-tag")
-	req.Header.Set(network.DefaultRouteHeaderName, "true")
+	req.Header.Set(netheader.RouteTagKey, "test-tag")
+	req.Header.Set(netheader.DefaultRouteKey, "true")
 	handler.ServeHTTP(resp, req)
 	wantTags["route_tag"] = undefinedTagName
 	metricstest.AssertMetric(t, metricstest.IntMetric("request_count", 1, wantTags).WithResource(wantResource))
 
 	reset()
 	handler, _ = NewRequestMetricsHandler(baseHandler, "ns", "svc", "cfg", "rev", "pod")
-	req.Header.Set(network.TagHeaderName, "test-tag")
-	req.Header.Set(network.DefaultRouteHeaderName, "false")
+	req.Header.Set(netheader.RouteTagKey, "test-tag")
+	req.Header.Set(netheader.DefaultRouteKey, "false")
 	handler.ServeHTTP(resp, req)
 	wantTags["route_tag"] = "test-tag"
 	metricstest.AssertMetric(t, metricstest.IntMetric("request_count", 1, wantTags).WithResource(wantResource))
@@ -195,7 +196,7 @@ func BenchmarkNewRequestMetricsHandler(b *testing.B) {
 	req := httptest.NewRequest(http.MethodPost, targetURI, nil)
 
 	b.Run("sequential", func(b *testing.B) {
-		for j := 0; j < b.N; j++ {
+		for range b.N {
 			handler.ServeHTTP(resp, req)
 		}
 	})
@@ -283,7 +284,7 @@ func TestAppRequestMetricsHandler(t *testing.T) {
 	metricstest.AssertMetric(t, metricstest.DistributionCountOnlyMetric("app_request_latencies", 1, wantTags).WithResource(wantResource))
 
 	// A probe request should not be recorded.
-	req.Header.Set(network.ProbeHeaderName, "activator")
+	req.Header.Set(netheader.ProbeKey, "activator")
 	handler.ServeHTTP(resp, req)
 	metricstest.AssertMetric(t, metricstest.IntMetric("app_request_count", 1, wantTags).WithResource(wantResource))
 	metricstest.AssertMetric(t, metricstest.DistributionCountOnlyMetric("app_request_latencies", 1, wantTags).WithResource(wantResource))
@@ -296,7 +297,7 @@ func BenchmarkRequestMetricsHandler(b *testing.B) {
 
 	b.Run("sequential", func(b *testing.B) {
 		resp := httptest.NewRecorder()
-		for j := 0; j < b.N; j++ {
+		for range b.N {
 			handler.ServeHTTP(resp, req)
 		}
 	})
@@ -323,7 +324,7 @@ func BenchmarkAppRequestMetricsHandler(b *testing.B) {
 
 	b.Run("sequential", func(b *testing.B) {
 		resp := httptest.NewRecorder()
-		for j := 0; j < b.N; j++ {
+		for range b.N {
 			handler.ServeHTTP(resp, req)
 		}
 	})

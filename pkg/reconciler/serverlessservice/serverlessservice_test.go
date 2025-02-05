@@ -92,6 +92,41 @@ func TestReconcile(t *testing.T) {
 			activatorEndpoints(WithSubsets),
 		},
 	}, {
+		Name: "force proxy mode, no endpoints",
+		Key:  "force/proxy",
+		Objects: []runtime.Object{
+			SKS("force", "proxy", markHappy, WithPubService, WithPrivateService, WithDeployRef("bar")),
+			deploy("force", "bar"),
+			svcpub("force", "proxy"),
+			svcpriv("force", "proxy"),
+			endpointspub("force", "proxy", withOtherSubsets, withFilteredPorts(networking.BackendHTTPPort)),
+			endpointspriv("force", "proxy" /* revision has no endpoints, force proxy mode */),
+			activatorEndpoints(WithSubsets),
+		},
+		WantUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: endpointspub("force", "proxy", WithSubsets, withFilteredPorts(networking.BackendHTTPPort)),
+		}},
+		WantStatusUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: SKS("force", "proxy", markHappy, WithPubService, WithPrivateService, WithDeployRef("bar"),
+				// Changes from above.
+				markNoEndpoints),
+		}},
+	}, {
+		Name: "force serve mode, no endpoints",
+		Key:  "force/serve",
+		Objects: []runtime.Object{
+			SKS("force", "serve", withProxyMode, markHappy, WithPubService, WithPrivateService, WithDeployRef("bar")),
+			deploy("force", "bar"),
+			svcpub("force", "serve"),
+			svcpriv("force", "serve"),
+			endpointspub("force", "serve", WithSubsets, withFilteredPorts(networking.BackendHTTPPort)),
+			endpointspriv("force", "serve", withOtherSubsets),
+			activatorEndpoints( /* activator has no endpoints, force serve mode */ ),
+		},
+		WantUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: endpointspub("force", "serve", withOtherSubsets, withFilteredPorts(networking.BackendHTTPPort)),
+		}},
+	}, {
 		// This is the case for once we are scaled to zero.
 		// It also exercises the retry logic.
 		Name: "steady switch to proxy mode, with retry",
@@ -768,15 +803,17 @@ func deploy(namespace, name string, opts ...deploymentOption) *appsv1.Deployment
 func withHTTP2Priv(svc *corev1.Service) {
 	svc.Spec.Ports[0].Name = "http2"
 	svc.Spec.Ports[0].TargetPort = intstr.FromInt(networking.BackendHTTP2Port)
+	svc.Spec.Ports[0].AppProtocol = &pkgnet.AppProtocolH2C
 
-	svc.Spec.Ports[4].Name = "http2-istio"
-	svc.Spec.Ports[4].Port = networking.BackendHTTP2Port
-	svc.Spec.Ports[4].TargetPort = intstr.FromInt(networking.BackendHTTP2Port)
+	svc.Spec.Ports[5].Name = "http2-istio"
+	svc.Spec.Ports[5].Port = networking.BackendHTTP2Port
+	svc.Spec.Ports[5].TargetPort = intstr.FromInt(networking.BackendHTTP2Port)
 }
 
 func withHTTP2(svc *corev1.Service) {
 	svc.Spec.Ports[0].Port = pkgnet.ServiceHTTP2Port
 	svc.Spec.Ports[0].Name = "http2"
+	svc.Spec.Ports[0].AppProtocol = &pkgnet.AppProtocolH2C
 	svc.Spec.Ports[0].TargetPort = intstr.FromInt(networking.BackendHTTP2Port)
 }
 
@@ -844,10 +881,10 @@ func endpointspriv(namespace, name string, eo ...EndpointsOption) *corev1.Endpoi
 func withNSubsets(numSS, numAddr int) EndpointsOption {
 	return func(ep *corev1.Endpoints) {
 		ep.Subsets = make([]corev1.EndpointSubset, numSS)
-		for i := 0; i < numSS; i++ {
+		for i := range numSS {
 			ep.Subsets[i].Ports = []corev1.EndpointPort{{Port: 8012}, {Port: 8013}}
 			ep.Subsets[i].Addresses = make([]corev1.EndpointAddress, numAddr)
-			for j := 0; j < numAddr; j++ {
+			for j := range numAddr {
 				ep.Subsets[i].Addresses[j].IP = fmt.Sprintf("10.1.%d.%d", i+1, j+1)
 			}
 		}

@@ -27,10 +27,15 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 
-	networkingpkg "knative.dev/networking/pkg"
 	"knative.dev/pkg/network"
 	ping "knative.dev/serving/test/test_images/grpc-ping/proto"
+)
+
+const (
+	defaultPort = "8080"
 )
 
 var (
@@ -81,18 +86,8 @@ func (s *server) PingStream(stream ping.PingService_PingStreamServer) error {
 	}
 }
 
-func httpWrapper(g *grpc.Server) http.Handler {
-	return networkingpkg.NewProbeHandler(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.ProtoMajor == 2 && r.Header.Get("Content-Type") == "application/grpc" {
-				g.ServeHTTP(w, r)
-			}
-		}),
-	)
-}
-
 func main() {
-	log.Print("Starting server on ", os.Getenv("PORT"))
+	log.Print("Starting server on ", getPort())
 
 	delay, _ = strconv.ParseInt(os.Getenv("DELAY"), 10, 64)
 	log.Printf("Using DELAY of %d ms", delay)
@@ -103,9 +98,22 @@ func main() {
 	}
 
 	g := grpc.NewServer()
-	s := network.NewServer(":"+os.Getenv("PORT"), httpWrapper(g))
-
+	grpc_health_v1.RegisterHealthServer(g, health.NewServer())
 	ping.RegisterPingServiceServer(g, &server{})
 
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && r.Header.Get("Content-Type") == "application/grpc" {
+			g.ServeHTTP(w, r)
+		}
+	}
+
+	s := network.NewServer(":"+getPort(), http.HandlerFunc(handler))
 	log.Fatal(s.ListenAndServe())
+}
+
+func getPort() string {
+	if port := os.Getenv("PORT"); port != "" {
+		return port
+	}
+	return defaultPort
 }

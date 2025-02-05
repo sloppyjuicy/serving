@@ -450,7 +450,7 @@ func TestProjectedServiceAccountToken(t *testing.T) {
 					Path:     tokenPath,
 				},
 			}},
-			DefaultMode: ptr.Int32(0444), // Ensure everybody can read the mounted files.
+			DefaultMode: ptr.Int32(0o444), // Ensure everybody can read the mounted files.
 		},
 	})
 	withSubpath := func(svc *v1.Service) {
@@ -480,7 +480,8 @@ func TestProjectedServiceAccountToken(t *testing.T) {
 		spoof.MatchesAllOf(spoof.IsStatusOK, isJWT),
 		"CheckEndpointToServeTheToken",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 		t.Error(err)
 	}
 }

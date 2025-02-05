@@ -17,12 +17,11 @@ limitations under the License.
 package handler
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/serving/pkg/activator"
 	"knative.dev/serving/pkg/queue"
 )
@@ -42,12 +41,12 @@ func TestProbeHandler(t *testing.T) {
 		method:         http.MethodPost,
 	}, {
 		label:          "filter a POST request containing probe header, even if probe is for a different target",
-		headers:        http.Header{network.ProbeHeaderName: []string{queue.Name}},
+		headers:        http.Header{netheader.ProbeKey: []string{queue.Name}},
 		expectedStatus: http.StatusBadRequest,
 		method:         http.MethodPost,
 	}, {
 		label:          "filter a POST request containing probe header",
-		headers:        http.Header{network.ProbeHeaderName: []string{activator.Name}},
+		headers:        http.Header{netheader.ProbeKey: []string{activator.Name}},
 		expectedStatus: http.StatusOK,
 		method:         http.MethodPost,
 	}, {
@@ -58,18 +57,18 @@ func TestProbeHandler(t *testing.T) {
 		method:         http.MethodGet,
 	}, {
 		label:          "filter a GET request containing probe header, with wrong target system",
-		headers:        http.Header{network.ProbeHeaderName: []string{"not-empty"}},
+		headers:        http.Header{netheader.ProbeKey: []string{"not-empty"}},
 		expectedStatus: http.StatusBadRequest,
 		method:         http.MethodGet,
 	}, {
 		label:          "filter a GET request containing probe header",
-		headers:        http.Header{network.ProbeHeaderName: []string{activator.Name}},
+		headers:        http.Header{netheader.ProbeKey: []string{activator.Name}},
 		passed:         false,
 		expectedStatus: http.StatusOK,
 		method:         http.MethodGet,
 	}, {
 		label:          "forward a request containing empty retry header",
-		headers:        http.Header{network.ProbeHeaderName: []string{""}},
+		headers:        http.Header{netheader.ProbeKey: []string{""}},
 		passed:         true,
 		expectedStatus: http.StatusOK,
 		method:         http.MethodPost,
@@ -111,10 +110,10 @@ func BenchmarkProbeHandler(b *testing.B) {
 		headers http.Header
 	}{{
 		label:   "valid header name",
-		headers: http.Header{network.ProbeHeaderName: []string{activator.Name}},
+		headers: http.Header{netheader.ProbeKey: []string{activator.Name}},
 	}, {
 		label:   "invalid header name",
-		headers: http.Header{network.ProbeHeaderName: []string{"some-other-cool-value"}},
+		headers: http.Header{netheader.ProbeKey: []string{"some-other-cool-value"}},
 	}, {
 		label:   "empty header name",
 		headers: http.Header{},
@@ -126,14 +125,14 @@ func BenchmarkProbeHandler(b *testing.B) {
 
 	for _, test := range tests {
 		req.Header = test.headers
-		b.Run(fmt.Sprintf("%s-sequential", test.label), func(b *testing.B) {
+		b.Run(test.label+"-sequential", func(b *testing.B) {
 			resp := httptest.NewRecorder()
-			for j := 0; j < b.N; j++ {
+			for range b.N {
 				handler.ServeHTTP(resp, req)
 			}
 		})
 
-		b.Run(fmt.Sprintf("%s-parallel", test.label), func(b *testing.B) {
+		b.Run(test.label+"-parallel", func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				resp := httptest.NewRecorder()
 				for pb.Next() {

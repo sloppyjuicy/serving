@@ -22,19 +22,17 @@ metadata:
     app.kubernetes.io/name: knative-serving
     app.kubernetes.io/component: storage-version-migration-job
     app.kubernetes.io/version: devel
-    serving.knative.dev/release: devel
 spec:
   ttlSecondsAfterFinished: 600
   backoffLimit: 10
   template:
     metadata:
-      annotations:
-        sidecar.istio.io/inject: "false"
       labels:
         app: storage-version-migration-serving
         app.kubernetes.io/name: knative-serving
         app.kubernetes.io/component: storage-version-migration-job
         app.kubernetes.io/version: devel
+        sidecar.istio.io/inject: "false"
     spec:
       serviceAccountName: controller
       restartPolicy: OnFailure
@@ -48,6 +46,7 @@ spec:
           - "configurations.serving.knative.dev"
           - "revisions.serving.knative.dev"
           - "routes.serving.knative.dev"
+          - "domainmappings.serving.knative.dev"
         resources:
           requests:
             cpu: 100m
@@ -59,3 +58,8 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault

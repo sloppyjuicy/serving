@@ -28,6 +28,16 @@ import (
 	"knative.dev/serving/test"
 )
 
+const (
+	defaultPort = "8080"
+)
+
+var (
+	healthy         bool
+	mu              sync.Mutex
+	livenessCounter int
+)
+
 func main() {
 	// Exec probe.
 	flag.Parse()
@@ -37,7 +47,7 @@ func main() {
 	}
 
 	// HTTP/TCP Probe.
-	healthy := true
+	healthy = true
 	var mu sync.Mutex
 	if env := os.Getenv("READY_DELAY"); env != "" {
 		delay, err := time.ParseDuration(env)
@@ -54,30 +64,6 @@ func main() {
 		}()
 	}
 
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		if !healthy {
-			http.Error(w, "not healthy", http.StatusInternalServerError)
-			return
-		}
-
-		fmt.Fprint(w, test.HelloWorldText)
-	})
-
-	http.HandleFunc("/start-failing", func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		healthy = false
-		fmt.Fprint(w, "will now fail readiness")
-	})
-
-	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, test.HelloWorldText)
-	})
-
 	if env := os.Getenv("LISTEN_DELAY"); env != "" {
 		delay, err := time.ParseDuration(env)
 		if err != nil {
@@ -87,16 +73,107 @@ func main() {
 		time.Sleep(delay)
 	}
 
-	http.ListenAndServe(":8080", nil)
+	mainServer := http.NewServeMux()
+	mainServer.HandleFunc("/", handleMain)
+	mainServer.HandleFunc("/start-failing", handleStartFailing)
+	// When the same image is used for a sidecar container, it is possible to give it
+	// a signal to start failing readiness. The request is sent to $FORWARD_PORT in the sidecar.
+	mainServer.HandleFunc("/start-failing-sidecar", handleStartFailingSidecar)
+
+	probeServer := http.NewServeMux()
+	probeServer.HandleFunc("/readiness", handleReadiness)
+	probeServer.HandleFunc("/liveness", handleLiveness)
+
+	if healthcheckPort := os.Getenv("HEALTHCHECK_PORT"); healthcheckPort != "" {
+		go func() {
+			http.ListenAndServe(":"+healthcheckPort, probeServer)
+		}()
+	} else {
+		mainServer.HandleFunc("/healthz/readiness", handleReadiness)
+		mainServer.HandleFunc("/healthz/liveness", handleLiveness)
+		mainServer.HandleFunc("/healthz/livenessCounter", handleLivenessCounter)
+	}
+
+	mainServer.HandleFunc("/query", handleQuery)
+
+	http.ListenAndServe(":"+getServerPort(), mainServer)
 }
 
 func execProbeMain() {
-	resp, err := http.Get(os.ExpandEnv("http://localhost:$PORT/healthz"))
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%s/healthz/readiness", getServerPort()))
 	if err != nil {
 		log.Fatal("Failed to probe: ", err)
 	}
+	resp.Body.Close()
 	if resp.StatusCode > 299 {
 		os.Exit(1)
+		return
 	}
 	os.Exit(0)
+}
+
+func handleStartFailing(w http.ResponseWriter, _ *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	healthy = false
+	fmt.Fprint(w, "will now fail readiness")
+}
+
+func handleStartFailingSidecar(_ http.ResponseWriter, _ *http.Request) {
+	resp, err := http.Get(os.ExpandEnv("http://localhost:$FORWARD_PORT/start-failing"))
+	if err != nil {
+		log.Fatalf("GET to /start-failing failed: %v", err)
+	}
+	defer resp.Body.Close()
+}
+
+func handleReadiness(w http.ResponseWriter, _ *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !healthy {
+		http.Error(w, "not healthy", http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprint(w, test.HelloWorldText)
+}
+
+func handleLiveness(w http.ResponseWriter, _ *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !healthy {
+		http.Error(w, "not healthy", http.StatusInternalServerError)
+		return
+	}
+
+	livenessCounter++
+
+	fmt.Fprint(w, livenessCounter)
+}
+
+func handleLivenessCounter(w http.ResponseWriter, _ *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	fmt.Fprint(w, livenessCounter)
+}
+
+func handleQuery(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("probe") == "ok" {
+		fmt.Fprint(w, test.HelloWorldText)
+	}
+	http.Error(w, "no query", http.StatusInternalServerError)
+}
+
+func handleMain(w http.ResponseWriter, _ *http.Request) {
+	fmt.Fprint(w, test.HelloWorldText)
+}
+
+func getServerPort() string {
+	if port := os.Getenv("PORT"); port != "" {
+		return port
+	}
+	return defaultPort
 }

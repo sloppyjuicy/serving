@@ -21,19 +21,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 func TestStatsHandler(t *testing.T) {
-	prom := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("served-by", "prometheus")
-	})
-
 	proto := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("served-by", "protobuf")
+		w.Header().Set("Served-By", "protobuf")
 	})
 
-	reporter := NewStatsHandler(prom, proto)
+	reporter := NewStatsHandler(proto)
 
 	tests := []struct {
 		name    string
@@ -41,23 +37,17 @@ func TestStatsHandler(t *testing.T) {
 		expect  string
 	}{{
 		name:   "no headers",
-		expect: "prometheus",
+		expect: "protobuf",
 	}, {
 		name: "some other accept header",
 		headers: http.Header{
 			"Accept": []string{"something-else"},
 		},
-		expect: "prometheus",
-	}, {
-		name: "protobuf in second Accept header still serves prometheus",
-		headers: http.Header{
-			"Accept": []string{"", network.ProtoAcceptContent},
-		},
-		expect: "prometheus",
+		expect: "protobuf",
 	}, {
 		name: "protobuf accept header",
 		headers: http.Header{
-			"Accept": []string{network.ProtoAcceptContent},
+			"Accept": []string{netheader.ProtobufMIMEType},
 		},
 		expect: "protobuf",
 	}, {
@@ -76,7 +66,7 @@ func TestStatsHandler(t *testing.T) {
 			w := httptest.NewRecorder()
 			reporter.ServeHTTP(w, r)
 
-			if got, want := w.Header().Get("served-by"), test.expect; got != want {
+			if got, want := w.Header().Get("Served-By"), test.expect; got != want {
 				t.Errorf("Expected to be served %s but was served %s", want, got)
 			}
 		})

@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// VolumeAttachmentApplyConfiguration represents an declarative configuration of the VolumeAttachment type for use
+// VolumeAttachmentApplyConfiguration represents a declarative configuration of the VolumeAttachment type for use
 // with apply.
 type VolumeAttachmentApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -36,7 +36,7 @@ type VolumeAttachmentApplyConfiguration struct {
 	Status                           *VolumeAttachmentStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// VolumeAttachment constructs an declarative configuration of the VolumeAttachment type for use with
+// VolumeAttachment constructs a declarative configuration of the VolumeAttachment type for use with
 // apply.
 func VolumeAttachment(name string) *VolumeAttachmentApplyConfiguration {
 	b := &VolumeAttachmentApplyConfiguration{}
@@ -49,7 +49,7 @@ func VolumeAttachment(name string) *VolumeAttachmentApplyConfiguration {
 // ExtractVolumeAttachment extracts the applied configuration owned by fieldManager from
 // volumeAttachment. If no managedFields are found in volumeAttachment for fieldManager, a
 // VolumeAttachmentApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // volumeAttachment must be a unmodified VolumeAttachment API object that was retrieved from the Kubernetes API.
@@ -58,8 +58,19 @@ func VolumeAttachment(name string) *VolumeAttachmentApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractVolumeAttachment(volumeAttachment *storagev1beta1.VolumeAttachment, fieldManager string) (*VolumeAttachmentApplyConfiguration, error) {
+	return extractVolumeAttachment(volumeAttachment, fieldManager, "")
+}
+
+// ExtractVolumeAttachmentStatus is the same as ExtractVolumeAttachment except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractVolumeAttachmentStatus(volumeAttachment *storagev1beta1.VolumeAttachment, fieldManager string) (*VolumeAttachmentApplyConfiguration, error) {
+	return extractVolumeAttachment(volumeAttachment, fieldManager, "status")
+}
+
+func extractVolumeAttachment(volumeAttachment *storagev1beta1.VolumeAttachment, fieldManager string, subresource string) (*VolumeAttachmentApplyConfiguration, error) {
 	b := &VolumeAttachmentApplyConfiguration{}
-	err := managedfields.ExtractInto(volumeAttachment, internal.Parser().Type("io.k8s.api.storage.v1beta1.VolumeAttachment"), fieldManager, b)
+	err := managedfields.ExtractInto(volumeAttachment, internal.Parser().Type("io.k8s.api.storage.v1beta1.VolumeAttachment"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -110,15 +121,6 @@ func (b *VolumeAttachmentApplyConfiguration) WithGenerateName(value string) *Vol
 func (b *VolumeAttachmentApplyConfiguration) WithNamespace(value string) *VolumeAttachmentApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *VolumeAttachmentApplyConfiguration) WithSelfLink(value string) *VolumeAttachmentApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -231,15 +233,6 @@ func (b *VolumeAttachmentApplyConfiguration) WithFinalizers(values ...string) *V
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *VolumeAttachmentApplyConfiguration) WithClusterName(value string) *VolumeAttachmentApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *VolumeAttachmentApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -260,4 +253,10 @@ func (b *VolumeAttachmentApplyConfiguration) WithSpec(value *VolumeAttachmentSpe
 func (b *VolumeAttachmentApplyConfiguration) WithStatus(value *VolumeAttachmentStatusApplyConfiguration) *VolumeAttachmentApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *VolumeAttachmentApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

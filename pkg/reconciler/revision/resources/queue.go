@@ -19,15 +19,15 @@ package resources
 import (
 	"fmt"
 	"math"
-	"path"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	network "knative.dev/networking/pkg"
 	pkgnet "knative.dev/networking/pkg/apis/networking"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/kmap"
 	"knative.dev/pkg/metrics"
 	"knative.dev/pkg/profiling"
@@ -44,9 +44,10 @@ import (
 )
 
 const (
-	localAddress             = "127.0.0.1"
-	requestQueueHTTPPortName = "queue-port"
-	profilingPortName        = "profiling-port"
+	localAddress              = "127.0.0.1"
+	requestQueueHTTPPortName  = "queue-port"
+	requestQueueHTTPSPortName = "https-port" // must be no more than 15 characters.
+	profilingPortName         = "profiling-port"
 )
 
 var (
@@ -57,6 +58,10 @@ var (
 	queueHTTP2Port = corev1.ContainerPort{
 		Name:          requestQueueHTTPPortName,
 		ContainerPort: networking.BackendHTTP2Port,
+	}
+	queueHTTPSPort = corev1.ContainerPort{
+		Name:          requestQueueHTTPSPortName,
+		ContainerPort: networking.BackendHTTPSPort,
 	}
 	queueNonServingPorts = []corev1.ContainerPort{{
 		// Provides health checks and lifecycle hooks.
@@ -80,27 +85,36 @@ var (
 		ReadOnlyRootFilesystem:   ptr.Bool(true),
 		RunAsNonRoot:             ptr.Bool(true),
 		Capabilities: &corev1.Capabilities{
-			Drop: []corev1.Capability{"all"},
+			Drop: []corev1.Capability{"ALL"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
 )
 
-func createQueueResources(cfg *deployment.Config, annotations map[string]string, userContainer *corev1.Container) corev1.ResourceRequirements {
+func createQueueResources(cfg *deployment.Config, annotations map[string]string, userContainer *corev1.Container, useDefaults bool) corev1.ResourceRequirements {
 	resourceRequests := corev1.ResourceList{}
 	resourceLimits := corev1.ResourceList{}
 
 	for _, r := range []struct {
-		Name    corev1.ResourceName
-		Request *resource.Quantity
-		Limit   *resource.Quantity
+		Name           corev1.ResourceName
+		Request        *resource.Quantity
+		RequestDefault *resource.Quantity
+		Limit          *resource.Quantity
+		LimitDefault   *resource.Quantity
 	}{{
-		Name:    corev1.ResourceCPU,
-		Request: cfg.QueueSidecarCPURequest,
-		Limit:   cfg.QueueSidecarCPULimit,
+		Name:           corev1.ResourceCPU,
+		Request:        cfg.QueueSidecarCPURequest,
+		RequestDefault: &deployment.QueueSidecarCPURequestDefault,
+		Limit:          cfg.QueueSidecarCPULimit,
+		LimitDefault:   &deployment.QueueSidecarCPULimitDefault,
 	}, {
-		Name:    corev1.ResourceMemory,
-		Request: cfg.QueueSidecarMemoryRequest,
-		Limit:   cfg.QueueSidecarMemoryLimit,
+		Name:           corev1.ResourceMemory,
+		Request:        cfg.QueueSidecarMemoryRequest,
+		RequestDefault: &deployment.QueueSidecarMemoryRequestDefault,
+		Limit:          cfg.QueueSidecarMemoryLimit,
+		LimitDefault:   &deployment.QueueSidecarMemoryLimitDefault,
 	}, {
 		Name:    corev1.ResourceEphemeralStorage,
 		Request: cfg.QueueSidecarEphemeralStorageRequest,
@@ -108,9 +122,13 @@ func createQueueResources(cfg *deployment.Config, annotations map[string]string,
 	}} {
 		if r.Request != nil {
 			resourceRequests[r.Name] = *r.Request
+		} else if useDefaults && r.RequestDefault != nil {
+			resourceRequests[r.Name] = *r.RequestDefault
 		}
 		if r.Limit != nil {
 			resourceLimits[r.Name] = *r.Limit
+		} else if useDefaults && r.LimitDefault != nil {
+			resourceLimits[r.Name] = *r.LimitDefault
 		}
 	}
 
@@ -132,6 +150,30 @@ func createQueueResources(cfg *deployment.Config, annotations map[string]string,
 		if ok, limitMemory = computeResourceRequirements(userContainer.Resources.Limits.Memory(), resourceFraction, queueContainerLimitMemory); ok {
 			resourceLimits[corev1.ResourceMemory] = limitMemory
 		}
+	}
+
+	if requestCPU, ok := resourceFromAnnotation(annotations, serving.QueueSidecarCPUResourceRequestAnnotation); ok {
+		resourceRequests[corev1.ResourceCPU] = requestCPU
+	}
+
+	if limitCPU, ok := resourceFromAnnotation(annotations, serving.QueueSidecarCPUResourceLimitAnnotation); ok {
+		resourceLimits[corev1.ResourceCPU] = limitCPU
+	}
+
+	if requestMemory, ok := resourceFromAnnotation(annotations, serving.QueueSidecarMemoryResourceRequestAnnotation); ok {
+		resourceRequests[corev1.ResourceMemory] = requestMemory
+	}
+
+	if limitMemory, ok := resourceFromAnnotation(annotations, serving.QueueSidecarMemoryResourceLimitAnnotation); ok {
+		resourceLimits[corev1.ResourceMemory] = limitMemory
+	}
+
+	if requestEphmeralStorage, ok := resourceFromAnnotation(annotations, serving.QueueSidecarEphemeralStorageResourceRequestAnnotation); ok {
+		resourceRequests[corev1.ResourceEphemeralStorage] = requestEphmeralStorage
+	}
+
+	if limitEphemeralStorage, ok := resourceFromAnnotation(annotations, serving.QueueSidecarEphemeralStorageResourceLimitAnnotation); ok {
+		resourceLimits[corev1.ResourceEphemeralStorage] = limitEphemeralStorage
 	}
 
 	resources := corev1.ResourceRequirements{
@@ -168,6 +210,12 @@ func computeResourceRequirements(resourceQuantity *resource.Quantity, fraction f
 	return true, newquantity
 }
 
+func resourceFromAnnotation(m map[string]string, key kmap.KeyPriority) (resource.Quantity, bool) {
+	_, v, _ := key.Get(m)
+	q, err := resource.ParseQuantity(v)
+	return q, err == nil
+}
+
 func fractionFromPercentage(m map[string]string, key kmap.KeyPriority) (float64, bool) {
 	_, v, _ := key.Get(m)
 	value, err := strconv.ParseFloat(v, 64)
@@ -193,7 +241,14 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 	if rev.Spec.TimeoutSeconds != nil {
 		ts = *rev.Spec.TimeoutSeconds
 	}
-
+	responseStartTimeout := int64(0)
+	if rev.Spec.ResponseStartTimeoutSeconds != nil {
+		responseStartTimeout = *rev.Spec.ResponseStartTimeoutSeconds
+	}
+	idleTimeout := int64(0)
+	if rev.Spec.IdleTimeoutSeconds != nil {
+		idleTimeout = *rev.Spec.IdleTimeoutSeconds
+	}
 	ports := queueNonServingPorts
 	if cfg.Observability.EnableProfiling {
 		ports = append(ports, profilingPort)
@@ -203,56 +258,95 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 	if rev.GetProtocol() == pkgnet.ProtocolH2C {
 		servingPort = queueHTTP2Port
 	}
-	ports = append(ports, servingPort)
+	ports = append(ports, servingPort, queueHTTPSPort)
 
-	container := rev.Spec.GetContainer()
+	// User container (and queue-proxy) readiness probe
+	userContainer := rev.Spec.GetContainer()
+	var queueProxyReadinessProbe, userContainerReadinessProbe *corev1.Probe
+	if userContainer.ReadinessProbe != nil {
+		probePort := userPort
+		if userContainer.ReadinessProbe.HTTPGet != nil && userContainer.ReadinessProbe.HTTPGet.Port.IntValue() != 0 {
+			probePort = userContainer.ReadinessProbe.HTTPGet.Port.IntVal
+		}
+		if userContainer.ReadinessProbe.TCPSocket != nil && userContainer.ReadinessProbe.TCPSocket.Port.IntValue() != 0 {
+			probePort = userContainer.ReadinessProbe.TCPSocket.Port.IntVal
+		}
+		if userContainer.ReadinessProbe.GRPC != nil && userContainer.ReadinessProbe.GRPC.Port > 0 {
+			probePort = userContainer.ReadinessProbe.GRPC.Port
+		}
 
-	var httpProbe, execProbe *corev1.Probe
-	var userProbeJSON string
-	if container.ReadinessProbe != nil {
 		// The activator attempts to detect readiness itself by checking the Queue
 		// Proxy's health endpoint rather than waiting for Kubernetes to check and
-		// propagate the Ready state. We encode the original probe as JSON in an
+		// propagate the Ready state. We encode the original readiness probes as JSON in an
 		// environment variable for this health endpoint to use.
-		userProbe := container.ReadinessProbe.DeepCopy()
-		applyReadinessProbeDefaultsForExec(userProbe, userPort)
-
-		var err error
-		userProbeJSON, err = readiness.EncodeProbe(userProbe)
-		if err != nil {
-			return nil, fmt.Errorf("failed to serialize readiness probe: %w", err)
-		}
+		userContainerReadinessProbe = userContainer.ReadinessProbe.DeepCopy()
+		applyReadinessProbeDefaults(userContainerReadinessProbe, probePort)
 
 		// After startup we'll directly use the same http health check endpoint the
 		// execprobe would have used (which will then check the user container).
 		// Unlike the StartupProbe, we don't need to override any of the other settings
 		// except period here. See below.
-		httpProbe = container.ReadinessProbe.DeepCopy()
-		httpProbe.Handler = corev1.Handler{
+		queueProxyReadinessProbe = userContainer.ReadinessProbe.DeepCopy()
+		queueProxyReadinessProbe.ProbeHandler = corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
-				Port: intstr.FromInt(int(servingPort.ContainerPort)),
+				Port: intstr.FromInt32(servingPort.ContainerPort),
 				HTTPHeaders: []corev1.HTTPHeader{{
-					Name:  network.ProbeHeaderName,
+					Name:  netheader.ProbeKey,
 					Value: queue.Name,
 				}},
 			},
 		}
+	}
 
-		// Default PeriodSeconds to 1 if not set to make for the quickest possible startup
-		// time.
-		// TODO(#10973): Remove this once we're on K8s 1.21
-		if httpProbe.PeriodSeconds == 0 {
-			httpProbe.PeriodSeconds = 1
+	// Sidecar readiness probes
+	multiContainerProbingEnabled := cfg.Features.MultiContainerProbing == apicfg.Enabled
+	readinessProbes := []*corev1.Probe{userContainerReadinessProbe}
+	if multiContainerProbingEnabled {
+		for _, sc := range rev.Spec.GetSidecarContainers() {
+			if sc.ReadinessProbe != nil {
+				var probePort int32
+				switch {
+				case sc.ReadinessProbe.HTTPGet != nil && sc.ReadinessProbe.HTTPGet.Port.IntValue() != 0:
+					probePort = sc.ReadinessProbe.HTTPGet.Port.IntVal
+				case sc.ReadinessProbe.TCPSocket != nil && sc.ReadinessProbe.TCPSocket.Port.IntValue() != 0:
+					probePort = sc.ReadinessProbe.TCPSocket.Port.IntVal
+				case sc.ReadinessProbe.GRPC != nil && sc.ReadinessProbe.GRPC.Port > 0:
+					probePort = sc.ReadinessProbe.GRPC.Port
+				default:
+					return nil, fmt.Errorf("sidecar readiness probe does not define probe port on container: %s", sc.Name)
+				}
+				scProbe := sc.ReadinessProbe.DeepCopy()
+				applyReadinessProbeDefaults(scProbe, probePort)
+				readinessProbes = append(readinessProbes, scProbe)
+			}
 		}
 	}
 
+	// encode the readiness probe(s)
+	var readinessProbeJSON string
+	var err error
+	if multiContainerProbingEnabled && readinessProbes != nil && len(readinessProbes) > 0 {
+		readinessProbeJSON, err = readiness.EncodeMultipleProbes(readinessProbes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize multiple readiness probes: %w", err)
+		}
+	} else if userContainerReadinessProbe != nil {
+		readinessProbeJSON, err = readiness.EncodeSingleProbe(userContainerReadinessProbe)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize single readiness probe: %w", err)
+		}
+	}
+
+	fullDuplexFeature, fullDuplexExists := rev.Annotations[apicfg.AllowHTTPFullDuplexFeatureKey]
+
+	useQPResourceDefaults := cfg.Features.QueueProxyResourceDefaults == apicfg.Enabled
 	c := &corev1.Container{
 		Name:            QueueContainerName,
 		Image:           cfg.Deployment.QueueSidecarImage,
-		Resources:       createQueueResources(cfg.Deployment, rev.GetAnnotations(), container),
+		Resources:       createQueueResources(cfg.Deployment, rev.GetAnnotations(), userContainer, useQPResourceDefaults),
 		Ports:           ports,
-		StartupProbe:    execProbe,
-		ReadinessProbe:  httpProbe,
+		StartupProbe:    nil,
+		ReadinessProbe:  queueProxyReadinessProbe,
 		SecurityContext: queueSecurityContext,
 		Env: []corev1.EnvVar{{
 			Name:  "SERVING_NAMESPACE",
@@ -270,11 +364,20 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 			Name:  "QUEUE_SERVING_PORT",
 			Value: strconv.Itoa(int(servingPort.ContainerPort)),
 		}, {
+			Name:  "QUEUE_SERVING_TLS_PORT",
+			Value: strconv.Itoa(int(queueHTTPSPort.ContainerPort)),
+		}, {
 			Name:  "CONTAINER_CONCURRENCY",
 			Value: strconv.Itoa(int(rev.Spec.GetContainerConcurrency())),
 		}, {
 			Name:  "REVISION_TIMEOUT_SECONDS",
 			Value: strconv.Itoa(int(ts)),
+		}, {
+			Name:  "REVISION_RESPONSE_START_TIMEOUT_SECONDS",
+			Value: strconv.Itoa(int(responseStartTimeout)),
+		}, {
+			Name:  "REVISION_IDLE_TIMEOUT_SECONDS",
+			Value: strconv.Itoa(int(idleTimeout)),
 		}, {
 			Name: "SERVING_POD",
 			ValueFrom: &corev1.EnvVarSource{
@@ -305,6 +408,9 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 			Name:  "SERVING_REQUEST_METRICS_BACKEND",
 			Value: cfg.Observability.RequestMetricsBackend,
 		}, {
+			Name:  "SERVING_REQUEST_METRICS_REPORTING_PERIOD_SECONDS",
+			Value: strconv.Itoa(cfg.Observability.RequestMetricsReportingPeriodSeconds),
+		}, {
 			Name:  "TRACING_CONFIG_BACKEND",
 			Value: string(cfg.Tracing.Backend),
 		}, {
@@ -327,7 +433,7 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 			Value: metrics.Domain(),
 		}, {
 			Name:  "SERVING_READINESS_PROBE",
-			Value: userProbeJSON,
+			Value: readinessProbeJSON,
 		}, {
 			Name:  "ENABLE_PROFILING",
 			Value: strconv.FormatBool(cfg.Observability.EnableProfiling),
@@ -337,12 +443,6 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 		}, {
 			Name:  "METRICS_COLLECTOR_ADDRESS",
 			Value: cfg.Observability.MetricsCollectorAddress,
-		}, {
-			Name:  "CONCURRENCY_STATE_ENDPOINT",
-			Value: cfg.Deployment.ConcurrencyStateEndpoint,
-		}, {
-			Name:  "CONCURRENCY_STATE_TOKEN_PATH",
-			Value: path.Join(concurrencyStateTokenVolumeMountPath, concurrencyStateTokenName),
 		}, {
 			Name: "HOST_IP",
 			ValueFrom: &corev1.EnvVarSource{
@@ -354,39 +454,45 @@ func makeQueueContainer(rev *v1.Revision, cfg *config.Config) (*corev1.Container
 		}, {
 			Name:  "ENABLE_HTTP2_AUTO_DETECTION",
 			Value: strconv.FormatBool(cfg.Features.AutoDetectHTTP2 == apicfg.Enabled),
+		}, {
+			Name:  "ENABLE_HTTP_FULL_DUPLEX",
+			Value: strconv.FormatBool(fullDuplexExists && strings.EqualFold(fullDuplexFeature, string(apicfg.Enabled))),
+		}, {
+			Name:  "ROOT_CA",
+			Value: cfg.Deployment.QueueSidecarRootCA,
+		}, {
+			Name:  "ENABLE_MULTI_CONTAINER_PROBES",
+			Value: strconv.FormatBool(multiContainerProbingEnabled),
 		}},
 	}
 
 	return c, nil
 }
 
-func applyReadinessProbeDefaultsForExec(p *corev1.Probe, port int32) {
+func applyReadinessProbeDefaults(p *corev1.Probe, port int32) {
 	switch {
 	case p == nil:
 		return
 	case p.HTTPGet != nil:
 		p.HTTPGet.Host = localAddress
-		p.HTTPGet.Port = intstr.FromInt(int(port))
+		p.HTTPGet.Port = intstr.FromInt32(port)
 
 		if p.HTTPGet.Scheme == "" {
 			p.HTTPGet.Scheme = corev1.URISchemeHTTP
 		}
-
-		p.HTTPGet.HTTPHeaders = append(p.HTTPGet.HTTPHeaders, corev1.HTTPHeader{
-			Name:  network.KubeletProbeHeaderName,
-			Value: queue.Name,
-		})
 	case p.TCPSocket != nil:
 		p.TCPSocket.Host = localAddress
-		p.TCPSocket.Port = intstr.FromInt(int(port))
+		p.TCPSocket.Port = intstr.FromInt32(port)
 	case p.Exec != nil:
-		// User-defined ExecProbe will still be run on user-container.
+		// User-defined ExecProbe will still be run on user/sidecar-container.
 		// Use TCP probe in queue-proxy.
 		p.TCPSocket = &corev1.TCPSocketAction{
 			Host: localAddress,
-			Port: intstr.FromInt(int(port)),
+			Port: intstr.FromInt32(port),
 		}
 		p.Exec = nil
+	case p.GRPC != nil:
+		p.GRPC.Port = port
 	}
 
 	if p.PeriodSeconds > 0 && p.TimeoutSeconds < 1 {

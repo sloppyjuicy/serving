@@ -39,7 +39,7 @@ func WaitForRevisionState(client *test.ServingClients, name string, inState func
 	defer span.End()
 
 	var lastState *v1.Revision
-	waitErr := wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(context.Background(), test.PollInterval, test.PollTimeout, true, func(context.Context) (bool, error) {
 		var err error
 		lastState, err = client.Revisions.Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
@@ -77,6 +77,12 @@ func CheckRevisionState(client *test.ServingClients, name string, inState func(r
 // or being ready. It will also return false if the type of the condition is unexpected.
 func IsRevisionReady(r *v1.Revision) (bool, error) {
 	return r.IsReady(), nil
+}
+
+// IsRevisionFailed will check the status condition sof the revision and return true if the revision is
+// marked as failed, otherwise it will return false.
+func IsRevisionFailed(r *v1.Revision) (bool, error) {
+	return r.IsFailed(), nil
 }
 
 // IsRevisionRoutingActive will check if the revision is actively routing to a route.

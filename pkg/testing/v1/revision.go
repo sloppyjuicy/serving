@@ -22,7 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/clock"
+	"k8s.io/utils/clock"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
@@ -152,6 +152,27 @@ func MarkDeploying(reason string) RevisionOption {
 	}
 }
 
+// MarkContainerHealthyUnknown changes the ContainerHealthy condition to Unknown with the given reason
+func MarkContainerHealthyUnknown(reason string) RevisionOption {
+	return func(r *v1.Revision) {
+		r.Status.MarkContainerHealthyUnknown(reason, "")
+	}
+}
+
+// MarkContainerHealthyFalse changes the ContainerHealthy condition to False with the given reason
+func MarkContainerHealthyFalse(reason string) RevisionOption {
+	return func(r *v1.Revision) {
+		r.Status.MarkContainerHealthyFalse(reason, "")
+	}
+}
+
+// MarkContainerHealthyTrue changes the ContainerHealthy condition to True
+func MarkContainerHealthyTrue() RevisionOption {
+	return func(r *v1.Revision) {
+		r.Status.MarkContainerHealthyTrue()
+	}
+}
+
 // MarkProgressDeadlineExceeded calls the method of the same name on the Revision
 // with the message we expect the Revision Reconciler to pass.
 func MarkProgressDeadlineExceeded(message string) RevisionOption {
@@ -228,6 +249,22 @@ func WithRevisionInitContainers() RevisionOption {
 		}, {
 			Name:  "init2",
 			Image: "initimage",
+		}}
+	}
+}
+
+func WithRevisionPVC() RevisionOption {
+	return func(r *v1.Revision) {
+		r.Spec.Volumes = []corev1.Volume{{
+			Name: "claimvolume",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: "myclaim",
+				ReadOnly:  false,
+			}},
+		}}
+		r.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+			Name:      "claimvolume",
+			MountPath: "/data",
 		}}
 	}
 }

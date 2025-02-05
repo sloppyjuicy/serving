@@ -19,10 +19,10 @@ package metric
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
@@ -211,14 +211,14 @@ func TestReconcileWithCollector(t *testing.T) {
 
 	scs.AutoscalingV1alpha1().Metrics(m.Namespace).Create(ctx, m, metav1.CreateOptions{})
 
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 		return collector.createOrUpdateCalls.Load() > 0, nil
 	}); err != nil {
 		t.Fatal("CreateOrUpdate() called 0 times, want non-zero times")
 	}
 
 	scs.AutoscalingV1alpha1().Metrics(m.Namespace).Delete(ctx, m.Name, metav1.DeleteOptions{})
-	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
 		return collector.deleteCalls.Load() > 0, nil
 	}); err != nil {
 		t.Fatal("Delete() called 0 times, want non-zero times")
@@ -270,12 +270,12 @@ type testCollector struct {
 }
 
 func (c *testCollector) CreateOrUpdate(metric *autoscalingv1alpha1.Metric) error {
-	c.createOrUpdateCalls.Inc()
+	c.createOrUpdateCalls.Add(1)
 	return c.createOrUpdateError
 }
 
 func (c *testCollector) Delete(namespace, name string) {
-	c.deleteCalls.Inc()
+	c.deleteCalls.Add(1)
 }
 
 func (c *testCollector) Watch(func(types.NamespacedName)) {}

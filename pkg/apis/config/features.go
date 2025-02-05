@@ -39,24 +39,76 @@ const (
 	Allowed Flag = "Allowed"
 )
 
+// service annotations under features.knative.dev/*
+const (
+	// QueueProxyPodInfoFeatureKey gates mouting of podinfo with the value 'enabled'
+	QueueProxyPodInfoFeatureKey = "features.knative.dev/queueproxy-podinfo"
+
+	// DryRunFeatureKey gates the podspec dryrun feature and runs with the value 'enabled'
+	DryRunFeatureKey = "features.knative.dev/podspec-dryrun"
+
+	// AllowHTTPFullDuplexFeatureKey gates the use of http1 full duplex per workload
+	AllowHTTPFullDuplexFeatureKey = "features.knative.dev/http-full-duplex"
+)
+
+// Feature config map keys that are used in schema-tweak
+const (
+	FeatureContainerSpecAddCapabilities     = "kubernetes.containerspec-addcapabilities"
+	FeaturePodSpecAffinity                  = "kubernetes.podspec-affinity"
+	FeaturePodSpecDNSConfig                 = "kubernetes.podspec-dnsconfig"
+	FeaturePodSpecDNSPolicy                 = "kubernetes.podspec-dnspolicy"
+	FeaturePodSpecDryRun                    = "kubernetes.podspec-dryrun"
+	FeaturePodSpecEmptyDir                  = "kubernetes.podspec-volumes-emptydir"
+	FeaturePodSpecFieldRef                  = "kubernetes.podspec-fieldref"
+	FeaturePodSpecHostAliases               = "kubernetes.podspec-hostaliases"
+	FeaturePodSpecHostIPC                   = "kubernetes.podspec-hostipc"
+	FeaturePodSpecHostNetwork               = "kubernetes.podspec-hostnetwork"
+	FeaturePodSpecHostPID                   = "kubernetes.podspec-hostpid"
+	FeaturePodSpecHostPath                  = "kubernetes.podspec-volumes-hostpath"
+	FeaturePodSpecInitContainers            = "kubernetes.podspec-init-containers"
+	FeaturePodSpecNodeSelector              = "kubernetes.podspec-nodeselector"
+	FeaturePodSpecPVClaim                   = "kubernetes.podspec-persistent-volume-claim"
+	FeaturePodSpecPriorityClassName         = "kubernetes.podspec-priorityclassname"
+	FeaturePodSpecRuntimeClassName          = "kubernetes.podspec-runtimeclassname"
+	FeaturePodSpecSchedulerName             = "kubernetes.podspec-schedulername"
+	FeaturePodSpecSecurityContext           = "kubernetes.podspec-securitycontext"
+	FeaturePodSpecShareProcessNamespace     = "kubernetes.podspec-shareprocessnamespace"
+	FeaturePodSpecTolerations               = "kubernetes.podspec-tolerations"
+	FeaturePodSpecTopologySpreadConstraints = "kubernetes.podspec-topologyspreadconstraints"
+)
+
 func defaultFeaturesConfig() *Features {
 	return &Features{
-		MultiContainer:               Enabled,
-		PodSpecAffinity:              Disabled,
-		PodSpecDryRun:                Allowed,
-		PodSpecHostAliases:           Disabled,
-		PodSpecFieldRef:              Disabled,
-		PodSpecNodeSelector:          Disabled,
-		PodSpecRuntimeClassName:      Disabled,
-		PodSpecSecurityContext:       Disabled,
-		PodSpecPriorityClassName:     Disabled,
-		PodSpecSchedulerName:         Disabled,
-		ContainerSpecAddCapabilities: Disabled,
-		PodSpecTolerations:           Disabled,
-		PodSpecVolumesEmptyDir:       Disabled,
-		PodSpecInitContainers:        Disabled,
-		TagHeaderBasedRouting:        Disabled,
-		AutoDetectHTTP2:              Disabled,
+		MultiContainer:                   Enabled,
+		MultiContainerProbing:            Disabled,
+		PodSpecAffinity:                  Disabled,
+		PodSpecTopologySpreadConstraints: Disabled,
+		PodSpecDryRun:                    Allowed,
+		PodSpecHostAliases:               Disabled,
+		PodSpecFieldRef:                  Disabled,
+		PodSpecNodeSelector:              Disabled,
+		PodSpecRuntimeClassName:          Disabled,
+		PodSpecSecurityContext:           Disabled,
+		PodSpecShareProcessNamespace:     Disabled,
+		PodSpecHostIPC:                   Disabled,
+		PodSpecHostPID:                   Disabled,
+		PodSpecHostNetwork:               Disabled,
+		PodSpecPriorityClassName:         Disabled,
+		PodSpecSchedulerName:             Disabled,
+		ContainerSpecAddCapabilities:     Disabled,
+		PodSpecTolerations:               Disabled,
+		PodSpecVolumesEmptyDir:           Enabled,
+		PodSpecVolumesHostPath:           Disabled,
+		PodSpecPersistentVolumeClaim:     Disabled,
+		PodSpecPersistentVolumeWrite:     Disabled,
+		QueueProxyMountPodInfo:           Disabled,
+		QueueProxyResourceDefaults:       Disabled,
+		PodSpecInitContainers:            Disabled,
+		PodSpecDNSPolicy:                 Disabled,
+		PodSpecDNSConfig:                 Disabled,
+		SecurePodDefaults:                Disabled,
+		TagHeaderBasedRouting:            Disabled,
+		AutoDetectHTTP2:                  Disabled,
 	}
 }
 
@@ -65,22 +117,38 @@ func NewFeaturesConfigFromMap(data map[string]string) (*Features, error) {
 	nc := defaultFeaturesConfig()
 
 	if err := cm.Parse(data,
-		asFlag("multi-container", &nc.MultiContainer),
-		asFlag("kubernetes.podspec-affinity", &nc.PodSpecAffinity),
+		asFlag("autodetect-http2", &nc.AutoDetectHTTP2),
 		asFlag("kubernetes.podspec-dryrun", &nc.PodSpecDryRun),
-		asFlag("kubernetes.podspec-hostaliases", &nc.PodSpecHostAliases),
-		asFlag("kubernetes.podspec-fieldref", &nc.PodSpecFieldRef),
-		asFlag("kubernetes.podspec-nodeselector", &nc.PodSpecNodeSelector),
-		asFlag("kubernetes.podspec-runtimeclassname", &nc.PodSpecRuntimeClassName),
-		asFlag("kubernetes.podspec-securitycontext", &nc.PodSpecSecurityContext),
-		asFlag("kubernetes.podspec-priorityclassname", &nc.PodSpecPriorityClassName),
-		asFlag("kubernetes.podspec-schedulername", &nc.PodSpecSchedulerName),
-		asFlag("kubernetes.containerspec-addcapabilities", &nc.ContainerSpecAddCapabilities),
-		asFlag("kubernetes.podspec-tolerations", &nc.PodSpecTolerations),
-		asFlag("kubernetes.podspec-volumes-emptydir", &nc.PodSpecVolumesEmptyDir),
-		asFlag("kubernetes.podspec-init-containers", &nc.PodSpecInitContainers),
+		asFlag("kubernetes.podspec-persistent-volume-write", &nc.PodSpecPersistentVolumeWrite),
+		asFlag("multi-container", &nc.MultiContainer),
+		asFlag("multi-container-probing", &nc.MultiContainerProbing),
+		asFlag("queueproxy.mount-podinfo", &nc.QueueProxyMountPodInfo),
+		asFlag("queueproxy.resource-defaults", &nc.QueueProxyResourceDefaults),
+		asFlag("secure-pod-defaults", &nc.SecurePodDefaults),
 		asFlag("tag-header-based-routing", &nc.TagHeaderBasedRouting),
-		asFlag("autodetect-http2", &nc.AutoDetectHTTP2)); err != nil {
+		asFlag(FeatureContainerSpecAddCapabilities, &nc.ContainerSpecAddCapabilities),
+		asFlag(FeaturePodSpecAffinity, &nc.PodSpecAffinity),
+		asFlag(FeaturePodSpecDNSConfig, &nc.PodSpecDNSConfig),
+		asFlag(FeaturePodSpecDNSPolicy, &nc.PodSpecDNSPolicy),
+		asFlag(FeaturePodSpecEmptyDir, &nc.PodSpecVolumesEmptyDir),
+		asFlag(FeaturePodSpecFieldRef, &nc.PodSpecFieldRef),
+		asFlag(FeaturePodSpecHostAliases, &nc.PodSpecHostAliases),
+		asFlag(FeaturePodSpecHostIPC, &nc.PodSpecHostIPC),
+		asFlag(FeaturePodSpecHostIPC, &nc.PodSpecHostIPC),
+		asFlag(FeaturePodSpecHostNetwork, &nc.PodSpecHostNetwork),
+		asFlag(FeaturePodSpecHostPID, &nc.PodSpecHostPID),
+		asFlag(FeaturePodSpecHostPath, &nc.PodSpecVolumesHostPath),
+		asFlag(FeaturePodSpecInitContainers, &nc.PodSpecInitContainers),
+		asFlag(FeaturePodSpecNodeSelector, &nc.PodSpecNodeSelector),
+		asFlag(FeaturePodSpecPVClaim, &nc.PodSpecPersistentVolumeClaim),
+		asFlag(FeaturePodSpecPriorityClassName, &nc.PodSpecPriorityClassName),
+		asFlag(FeaturePodSpecRuntimeClassName, &nc.PodSpecRuntimeClassName),
+		asFlag(FeaturePodSpecSchedulerName, &nc.PodSpecSchedulerName),
+		asFlag(FeaturePodSpecSecurityContext, &nc.PodSpecSecurityContext),
+		asFlag(FeaturePodSpecShareProcessNamespace, &nc.PodSpecShareProcessNamespace),
+		asFlag(FeaturePodSpecTolerations, &nc.PodSpecTolerations),
+		asFlag(FeaturePodSpecTopologySpreadConstraints, &nc.PodSpecTopologySpreadConstraints),
+	); err != nil {
 		return nil, err
 	}
 	return nc, nil
@@ -93,22 +161,36 @@ func NewFeaturesConfigFromConfigMap(config *corev1.ConfigMap) (*Features, error)
 
 // Features specifies which features are allowed by the webhook.
 type Features struct {
-	MultiContainer               Flag
-	PodSpecAffinity              Flag
-	PodSpecDryRun                Flag
-	PodSpecFieldRef              Flag
-	PodSpecHostAliases           Flag
-	PodSpecNodeSelector          Flag
-	PodSpecRuntimeClassName      Flag
-	PodSpecSecurityContext       Flag
-	PodSpecPriorityClassName     Flag
-	PodSpecSchedulerName         Flag
-	ContainerSpecAddCapabilities Flag
-	PodSpecTolerations           Flag
-	PodSpecVolumesEmptyDir       Flag
-	PodSpecInitContainers        Flag
-	TagHeaderBasedRouting        Flag
-	AutoDetectHTTP2              Flag
+	MultiContainer                   Flag
+	MultiContainerProbing            Flag
+	PodSpecAffinity                  Flag
+	PodSpecTopologySpreadConstraints Flag
+	PodSpecDryRun                    Flag
+	PodSpecFieldRef                  Flag
+	PodSpecHostAliases               Flag
+	PodSpecNodeSelector              Flag
+	PodSpecRuntimeClassName          Flag
+	PodSpecSecurityContext           Flag
+	PodSpecShareProcessNamespace     Flag
+	PodSpecHostIPC                   Flag
+	PodSpecHostPID                   Flag
+	PodSpecHostNetwork               Flag
+	PodSpecPriorityClassName         Flag
+	PodSpecSchedulerName             Flag
+	ContainerSpecAddCapabilities     Flag
+	PodSpecTolerations               Flag
+	PodSpecVolumesEmptyDir           Flag
+	PodSpecVolumesHostPath           Flag
+	PodSpecInitContainers            Flag
+	PodSpecPersistentVolumeClaim     Flag
+	PodSpecPersistentVolumeWrite     Flag
+	QueueProxyMountPodInfo           Flag
+	QueueProxyResourceDefaults       Flag
+	PodSpecDNSPolicy                 Flag
+	PodSpecDNSConfig                 Flag
+	SecurePodDefaults                Flag
+	TagHeaderBasedRouting            Flag
+	AutoDetectHTTP2                  Flag
 }
 
 // asFlag parses the value at key as a Flag into the target, if it exists.

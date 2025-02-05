@@ -59,30 +59,50 @@ func TestFeaturesConfiguration(t *testing.T) {
 		name:    "features Enabled",
 		wantErr: false,
 		wantFeatures: defaultWith(&Features{
-			MultiContainer:           Enabled,
-			PodSpecAffinity:          Enabled,
-			PodSpecDryRun:            Enabled,
-			PodSpecHostAliases:       Enabled,
-			PodSpecNodeSelector:      Enabled,
-			PodSpecRuntimeClassName:  Enabled,
-			PodSpecSecurityContext:   Enabled,
-			PodSpecTolerations:       Enabled,
-			PodSpecPriorityClassName: Enabled,
-			PodSpecSchedulerName:     Enabled,
-			TagHeaderBasedRouting:    Enabled,
+			MultiContainer:                   Enabled,
+			MultiContainerProbing:            Enabled,
+			PodSpecAffinity:                  Enabled,
+			PodSpecTopologySpreadConstraints: Enabled,
+			PodSpecDryRun:                    Enabled,
+			PodSpecHostAliases:               Enabled,
+			PodSpecNodeSelector:              Enabled,
+			PodSpecRuntimeClassName:          Enabled,
+			PodSpecSecurityContext:           Enabled,
+			PodSpecShareProcessNamespace:     Enabled,
+			PodSpecHostIPC:                   Enabled,
+			PodSpecHostPID:                   Enabled,
+			PodSpecHostNetwork:               Enabled,
+			PodSpecTolerations:               Enabled,
+			PodSpecPriorityClassName:         Enabled,
+			PodSpecSchedulerName:             Enabled,
+			PodSpecDNSPolicy:                 Enabled,
+			PodSpecDNSConfig:                 Enabled,
+			SecurePodDefaults:                Enabled,
+			QueueProxyResourceDefaults:       Enabled,
+			TagHeaderBasedRouting:            Enabled,
 		}),
 		data: map[string]string{
-			"multi-container":                      "Enabled",
-			"kubernetes.podspec-affinity":          "Enabled",
-			"kubernetes.podspec-dryrun":            "Enabled",
-			"kubernetes.podspec-hostaliases":       "Enabled",
-			"kubernetes.podspec-nodeselector":      "Enabled",
-			"kubernetes.podspec-runtimeclassname":  "Enabled",
-			"kubernetes.podspec-securitycontext":   "Enabled",
-			"kubernetes.podspec-tolerations":       "Enabled",
-			"kubernetes.podspec-priorityclassname": "Enabled",
-			"kubernetes.podspec-schedulername":     "Enabled",
-			"tag-header-based-routing":             "Enabled",
+			"multi-container":                              "Enabled",
+			"multi-container-probing":                      "Enabled",
+			"kubernetes.podspec-affinity":                  "Enabled",
+			"kubernetes.podspec-topologyspreadconstraints": "Enabled",
+			"kubernetes.podspec-dryrun":                    "Enabled",
+			"kubernetes.podspec-hostaliases":               "Enabled",
+			"kubernetes.podspec-nodeselector":              "Enabled",
+			"kubernetes.podspec-runtimeclassname":          "Enabled",
+			"kubernetes.podspec-securitycontext":           "Enabled",
+			"kubernetes.podspec-shareprocessnamespace":     "Enabled",
+			"kubernetes.podspec-hostipc":                   "Enabled",
+			"kubernetes.podspec-hostpid":                   "Enabled",
+			"kubernetes.podspec-hostnetwork":               "Enabled",
+			"kubernetes.podspec-tolerations":               "Enabled",
+			"kubernetes.podspec-priorityclassname":         "Enabled",
+			"kubernetes.podspec-schedulername":             "Enabled",
+			"kubernetes.podspec-dnspolicy":                 "Enabled",
+			"kubernetes.podspec-dnsconfig":                 "Enabled",
+			"secure-pod-defaults":                          "Enabled",
+			"queueproxy.resource-defaults":                 "Enabled",
+			"tag-header-based-routing":                     "Enabled",
 		},
 	}, {
 		name:    "multi-container Allowed",
@@ -101,6 +121,24 @@ func TestFeaturesConfiguration(t *testing.T) {
 		}),
 		data: map[string]string{
 			"multi-container": "Disabled",
+		},
+	}, {
+		name:    "multi-container-probing Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			MultiContainerProbing: Allowed,
+		}),
+		data: map[string]string{
+			"multi-container-probing": "Allowed",
+		},
+	}, {
+		name:    "multi-container-probing Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			MultiContainerProbing: Disabled,
+		}),
+		data: map[string]string{
+			"multi-container-probing": "Disabled",
 		},
 	}, {
 		name:    "kubernetes.podspec-affinity Allowed",
@@ -128,6 +166,33 @@ func TestFeaturesConfiguration(t *testing.T) {
 		}),
 		data: map[string]string{
 			"kubernetes.podspec-affinity": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-topologyspreadconstraints Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecTopologySpreadConstraints: Allowed,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-topologyspreadconstraints": "Allowed",
+		},
+	}, {
+		name:    "kubernetes.podspec-topologyspreadconstraints Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecTopologySpreadConstraints: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-topologyspreadconstraints": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-topologyspreadconstraints Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecTopologySpreadConstraints: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-topologyspreadconstraints": "Disabled",
 		},
 	}, {
 		name:    "kubernetes.podspec-fieldref Allowed",
@@ -292,6 +357,24 @@ func TestFeaturesConfiguration(t *testing.T) {
 			"kubernetes.podspec-securitycontext": "Disabled",
 		},
 	}, {
+		name:    "shared process namespace Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecShareProcessNamespace: Allowed,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-shareprocessnamespace": "Allowed",
+		},
+	}, {
+		name:    "shared process namespace Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecShareProcessNamespace: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-shareprocessnamespace": "Disabled",
+		},
+	}, {
 		name:    "kubernetes.containerspec-addcapabilities Disabled",
 		wantErr: false,
 		wantFeatures: defaultWith(&Features{
@@ -353,6 +436,60 @@ func TestFeaturesConfiguration(t *testing.T) {
 		}),
 		data: map[string]string{
 			"kubernetes.podspec-volumes-emptydir": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-volumes-hostpath Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecVolumesHostPath: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-volumes-hostpath": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-volumes-hostpath Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecVolumesHostPath: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-volumes-hostpath": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-persistent-volume-claim Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecPersistentVolumeClaim: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-persistent-volume-claim": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-persistent-volume-claim Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecPersistentVolumeClaim: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-persistent-volume-claim": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-persistent-volume-write Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecPersistentVolumeWrite: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-persistent-volume-write": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-persistent-volume-claim Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecPersistentVolumeWrite: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-persistent-volume-write": "Enabled",
 		},
 	}, {
 		name:    "kubernetes.podspec-init-containers Disabled",
@@ -426,6 +563,114 @@ func TestFeaturesConfiguration(t *testing.T) {
 		data: map[string]string{
 			"kubernetes.podspec-schedulername": "Disabled",
 		},
+	}, {
+		name:    "kubernetes.podspec-dnspolicy Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSPolicy: Allowed,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnspolicy": "Allowed",
+		},
+	}, {
+		name:    "kubernetes.podspec-dnspolicy Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSPolicy: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnspolicy": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-dnspolicy Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSPolicy: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnspolicy": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-dnsconfig Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSConfig: Allowed,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnsconfig": "Allowed",
+		},
+	}, {
+		name:    "kubernetes.podspec-dnsconfig Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSConfig: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnsconfig": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-dnsconfig Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecDNSConfig: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-dnsconfig": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostipc Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostIPC: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostipc": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostipc Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostIPC: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostipc": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostpid Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostPID: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostpid": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostpid Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostPID: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostpid": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostnetwork Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostNetwork: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostnetwork": "Enabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostnetwork Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostNetwork: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostnetwork": "Disabled",
+		},
 	}}
 
 	for _, tt := range configTests {
@@ -451,7 +696,7 @@ func defaultWith(p *Features) *Features {
 	f := defaultFeaturesConfig()
 	pType := reflect.ValueOf(p).Elem()
 	fType := reflect.ValueOf(f).Elem()
-	for i := 0; i < pType.NumField(); i++ {
+	for i := range pType.NumField() {
 		if pType.Field(i).Interface().(Flag) != "" {
 			fType.Field(i).Set(pType.Field(i))
 		}

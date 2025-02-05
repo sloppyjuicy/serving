@@ -32,6 +32,7 @@ import (
 	"knative.dev/pkg/logging"
 	logtesting "knative.dev/pkg/logging/testing"
 	"knative.dev/pkg/ptr"
+	"knative.dev/serving/pkg/apis/config"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 )
 
@@ -52,7 +53,7 @@ func TestExtraServiceValidation(t *testing.T) {
 		Name:      "valid",
 		Namespace: "foo",
 		Annotations: map[string]string{
-			"features.knative.dev/podspec-dryrun": "enabled",
+			config.DryRunFeatureKey: "enabled",
 		},
 	}
 
@@ -131,7 +132,6 @@ func TestExtraServiceValidation(t *testing.T) {
 				t.Errorf("Validate got='%v', want='%v'", got.Error(), test.want)
 			}
 		})
-
 	}
 }
 
@@ -152,7 +152,7 @@ func TestConfigurationValidation(t *testing.T) {
 		Name:      "valid",
 		Namespace: "foo",
 		Annotations: map[string]string{
-			"features.knative.dev/podspec-dryrun": "enabled",
+			config.DryRunFeatureKey: "enabled",
 		},
 	}
 
@@ -186,7 +186,7 @@ func TestConfigurationValidation(t *testing.T) {
 					"serving.knative.dev/service": "skip-me",
 				},
 				Annotations: map[string]string{
-					"features.knative.dev/podspec-dryrun": "enabled",
+					config.DryRunFeatureKey: "enabled",
 				},
 			},
 			Spec: goodConfigSpec,
@@ -216,7 +216,6 @@ func TestConfigurationValidation(t *testing.T) {
 				t.Errorf("Validate got='%v', want='%v'", got.Error(), test.want)
 			}
 		})
-
 	}
 }
 

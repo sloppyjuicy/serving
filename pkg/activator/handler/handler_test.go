@@ -25,13 +25,13 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	pkgnet "knative.dev/pkg/network"
 	"knative.dev/pkg/ptr"
 	rtesting "knative.dev/pkg/reconciler/testing"
@@ -61,11 +61,11 @@ type fakeThrottler struct {
 	err error
 }
 
-func (ft fakeThrottler) Try(_ context.Context, _ types.NamespacedName, f func(string) error) error {
+func (ft fakeThrottler) Try(_ context.Context, _ types.NamespacedName, f func(string, bool) error) error {
 	if ft.err != nil {
 		return ft.err
 	}
-	return f("10.10.10.10:1234")
+	return f("10.10.10.10:1234", false)
 }
 
 func TestActivationHandler(t *testing.T) {
@@ -103,7 +103,7 @@ func TestActivationHandler(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			probeResponses := make([]activatortest.FakeResponse, len(test.probeResp))
-			for i := 0; i < len(test.probeResp); i++ {
+			for i := range len(test.probeResp) {
 				probeResponses[i] = activatortest.FakeResponse{
 					Err:  test.probeErr,
 					Code: test.probeCode,
@@ -123,7 +123,7 @@ func TestActivationHandler(t *testing.T) {
 
 			ctx, cancel, _ := rtesting.SetupFakeContextWithCancel(t)
 			defer cancel()
-			handler := New(ctx, test.throttler, rt, false /*usePassthroughLb*/, logging.FromContext(ctx))
+			handler := New(ctx, test.throttler, rt, false /*usePassthroughLb*/, logging.FromContext(ctx), false /* TLS */)
 
 			resp := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "http://example.com", nil)
@@ -162,7 +162,7 @@ func TestActivationHandlerProxyHeader(t *testing.T) {
 	ctx, cancel, _ := rtesting.SetupFakeContextWithCancel(t)
 	defer cancel()
 
-	handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx))
+	handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx), false /* TLS */)
 
 	writer := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "http://example.com", nil)
@@ -176,8 +176,8 @@ func TestActivationHandlerProxyHeader(t *testing.T) {
 
 	select {
 	case httpReq := <-interceptCh:
-		if got := httpReq.Header.Get(network.ProxyHeaderName); got != activator.Name {
-			t.Errorf("Header %q = %q, want: %q", network.ProxyHeaderName, got, activator.Name)
+		if got := httpReq.Header.Get(netheader.ProxyKey); got != activator.Name {
+			t.Errorf("Header %q = %q, want: %q", netheader.ProxyKey, got, activator.Name)
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Timed out waiting for a request to be intercepted")
@@ -195,7 +195,7 @@ func TestActivationHandlerPassthroughLb(t *testing.T) {
 	ctx, cancel, _ := rtesting.SetupFakeContextWithCancel(t)
 	defer cancel()
 
-	handler := New(ctx, fakeThrottler{}, rt, true /*usePassthroughLb*/, logging.FromContext(ctx))
+	handler := New(ctx, fakeThrottler{}, rt, true /*usePassthroughLb*/, logging.FromContext(ctx), false /* TLS */)
 
 	writer := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "http://example.com", nil)
@@ -213,7 +213,7 @@ func TestActivationHandlerPassthroughLb(t *testing.T) {
 		if got, want := httpReq.Host, "real-name-private.real-namespace"; got != want {
 			t.Errorf("Host = %q, want: %q", got, want)
 		}
-		if got, want := httpReq.Header.Get(network.PassthroughLoadbalancingHeaderName), "true"; got != want {
+		if got, want := httpReq.Header.Get(netheader.PassthroughLoadbalancingKey), "true"; got != want {
 			t.Errorf("Header %q = %q, want: %q", "Host", got, want)
 		}
 	case <-time.After(1 * time.Second):
@@ -273,10 +273,10 @@ func TestActivationHandlerTraceSpans(t *testing.T) {
 			defer func() {
 				cancel()
 				reporter.Close()
-				oct.Finish()
+				oct.Shutdown(context.Background())
 			}()
 
-			handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx))
+			handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx), false /* TLS */)
 
 			// Set up config store to populate context.
 			configStore := setupConfigStore(t, logging.FromContext(ctx))
@@ -345,7 +345,7 @@ func BenchmarkHandler(b *testing.B) {
 			}, nil
 		})
 
-		handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx))
+		handler := New(ctx, fakeThrottler{}, rt, false /*usePassthroughLb*/, logging.FromContext(ctx), false /* TLS */)
 
 		request := func() *http.Request {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
@@ -369,7 +369,7 @@ func BenchmarkHandler(b *testing.B) {
 
 		b.Run(fmt.Sprintf("%03dk-resp-len-sequential", bodyLength), func(b *testing.B) {
 			req := request()
-			for j := 0; j < b.N; j++ {
+			for range b.N {
 				test(req, b)
 			}
 		})

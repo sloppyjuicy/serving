@@ -21,18 +21,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
+	"time"
 
-	"go.uber.org/atomic"
-
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/serving/pkg/queue"
 )
 
 // FakeResponse is a response given by the FakeRoundTripper
 type FakeResponse struct {
-	Err  error
-	Code int
-	Body string
+	Err   error
+	Code  int
+	Body  string
+	Delay time.Duration
 }
 
 // FakeRoundTripper is a roundtripper emulator useful in testing
@@ -110,21 +111,44 @@ func (rt *FakeRoundTripper) popResponse(host string) *FakeResponse {
 
 // RT is a RoundTripperFunc
 func (rt *FakeRoundTripper) RT(req *http.Request) (*http.Response, error) {
-	if req.Header.Get(network.ProbeHeaderName) != "" {
-		rt.NumProbes.Inc()
+	ctx := req.Context()
+
+	delayResponse := func(resp *FakeResponse) error {
+		// Delay if set before sending response
+		if resp.Delay != 0 {
+			timer := time.NewTimer(resp.Delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		return nil
+	}
+
+	if req.Header.Get(netheader.ProbeKey) != "" {
+		rt.NumProbes.Add(1)
 		resp := rt.popResponse(req.URL.Host)
+
+		err := delayResponse(resp)
+		if err != nil {
+			return nil, err
+		}
+
 		if resp.Err != nil {
 			return nil, resp.Err
 		}
 
 		// Make sure the probe is attributed with correct header.
-		if req.Header.Get(network.ProbeHeaderName) != queue.Name {
+		if req.Header.Get(netheader.ProbeKey) != queue.Name {
 			return response(&FakeResponse{
 				Code: http.StatusBadRequest,
 				Body: "probe sent to a wrong system",
 			})
 		}
-		if req.Header.Get(network.UserAgentKey) != network.ActivatorUserAgent {
+		if req.Header.Get(netheader.UserAgentKey) != netheader.ActivatorUserAgent {
 			return response(&FakeResponse{
 				Code: http.StatusBadRequest,
 				Body: "probe set with a wrong User-Agent value",
@@ -135,6 +159,11 @@ func (rt *FakeRoundTripper) RT(req *http.Request) (*http.Response, error) {
 	resp := rt.RequestResponse
 	if resp == nil {
 		resp = defaultRequestResponse()
+	}
+
+	err := delayResponse(resp)
+	if err != nil {
+		return nil, err
 	}
 
 	if resp.Err != nil {
@@ -150,8 +179,8 @@ func (rt *FakeRoundTripper) RT(req *http.Request) (*http.Response, error) {
 	}
 
 	if rt.ExpectHost != "" {
-		if got, want := req.Header.Get(network.OriginalHostHeader), rt.ExpectHost; got != want {
-			return nil, fmt.Errorf("the %s header = %q, want: %q", network.OriginalHostHeader, got, want)
+		if got, want := req.Header.Get(netheader.OriginalHostKey), rt.ExpectHost; got != want {
+			return nil, fmt.Errorf("the %s header = %q, want: %q", netheader.OriginalHostKey, got, want)
 		}
 	}
 

@@ -132,10 +132,11 @@ func WithNoTraffic(reason, message string) PodAutoscalerOption {
 	}
 }
 
-// WithPADeletionTimestamp will set the DeletionTimestamp on the PodAutoscaler.
-func WithPADeletionTimestamp(r *autoscalingv1alpha1.PodAutoscaler) {
+// WithDeletionTimestamp will set the DeletionTimestamp on the object.
+func WithDeletionTimestamp[T metav1.Object](obj T) T {
 	t := metav1.NewTime(time.Unix(1e9, 0))
-	r.ObjectMeta.SetDeletionTimestamp(&t)
+	obj.SetDeletionTimestamp(&t)
+	return obj
 }
 
 // WithHPAClass updates the PA to add the hpa class annotation.
@@ -256,9 +257,10 @@ func WithExternalName(name string) K8sServiceOption {
 	return func(svc *corev1.Service) {
 		svc.Spec.ExternalName = name
 		svc.Spec.Ports = []corev1.ServicePort{{
-			Name:       networking.ServicePortNameH2C,
-			Port:       int32(80),
-			TargetPort: intstr.FromInt(80),
+			Name:        networking.ServicePortNameH2C,
+			AppProtocol: &networking.AppProtocolH2C,
+			Port:        int32(80),
+			TargetPort:  intstr.FromInt(80),
 		}}
 	}
 }
@@ -286,6 +288,25 @@ func WithEndpointsOwnersRemoved(eps *corev1.Endpoints) {
 
 // PodOption enables further configuration of a Pod.
 type PodOption func(*corev1.Pod)
+
+// WithPodCondition sets a condition in the status
+func WithPodCondition(conditionType corev1.PodConditionType, status corev1.ConditionStatus, reason string) PodOption {
+	return func(pod *corev1.Pod) {
+		for i, condition := range pod.Status.Conditions {
+			if condition.Type == conditionType {
+				pod.Status.Conditions[i].Status = status
+				pod.Status.Conditions[i].Reason = reason
+				return
+			}
+		}
+
+		pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+			Type:   conditionType,
+			Status: status,
+			Reason: reason,
+		})
+	}
+}
 
 // WithFailingContainer sets the .Status.ContainerStatuses on the pod to
 // include a container named accordingly to fail with the given state.

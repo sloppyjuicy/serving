@@ -23,7 +23,6 @@ import (
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
@@ -35,26 +34,28 @@ type FakeClusterDomainClaims struct {
 	Fake *FakeNetworkingV1alpha1
 }
 
-var clusterdomainclaimsResource = schema.GroupVersionResource{Group: "networking.internal.knative.dev", Version: "v1alpha1", Resource: "clusterdomainclaims"}
+var clusterdomainclaimsResource = v1alpha1.SchemeGroupVersion.WithResource("clusterdomainclaims")
 
-var clusterdomainclaimsKind = schema.GroupVersionKind{Group: "networking.internal.knative.dev", Version: "v1alpha1", Kind: "ClusterDomainClaim"}
+var clusterdomainclaimsKind = v1alpha1.SchemeGroupVersion.WithKind("ClusterDomainClaim")
 
 // Get takes name of the clusterDomainClaim, and returns the corresponding clusterDomainClaim object, and an error if there is any.
 func (c *FakeClusterDomainClaims) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.ClusterDomainClaim, err error) {
+	emptyResult := &v1alpha1.ClusterDomainClaim{}
 	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(clusterdomainclaimsResource, name), &v1alpha1.ClusterDomainClaim{})
+		Invokes(testing.NewRootGetActionWithOptions(clusterdomainclaimsResource, name, options), emptyResult)
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ClusterDomainClaim), err
 }
 
 // List takes label and field selectors, and returns the list of ClusterDomainClaims that match those selectors.
 func (c *FakeClusterDomainClaims) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.ClusterDomainClaimList, err error) {
+	emptyResult := &v1alpha1.ClusterDomainClaimList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(clusterdomainclaimsResource, clusterdomainclaimsKind, opts), &v1alpha1.ClusterDomainClaimList{})
+		Invokes(testing.NewRootListActionWithOptions(clusterdomainclaimsResource, clusterdomainclaimsKind, opts), emptyResult)
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -73,25 +74,27 @@ func (c *FakeClusterDomainClaims) List(ctx context.Context, opts v1.ListOptions)
 // Watch returns a watch.Interface that watches the requested clusterDomainClaims.
 func (c *FakeClusterDomainClaims) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(clusterdomainclaimsResource, opts))
+		InvokesWatch(testing.NewRootWatchActionWithOptions(clusterdomainclaimsResource, opts))
 }
 
 // Create takes the representation of a clusterDomainClaim and creates it.  Returns the server's representation of the clusterDomainClaim, and an error, if there is any.
 func (c *FakeClusterDomainClaims) Create(ctx context.Context, clusterDomainClaim *v1alpha1.ClusterDomainClaim, opts v1.CreateOptions) (result *v1alpha1.ClusterDomainClaim, err error) {
+	emptyResult := &v1alpha1.ClusterDomainClaim{}
 	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(clusterdomainclaimsResource, clusterDomainClaim), &v1alpha1.ClusterDomainClaim{})
+		Invokes(testing.NewRootCreateActionWithOptions(clusterdomainclaimsResource, clusterDomainClaim, opts), emptyResult)
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ClusterDomainClaim), err
 }
 
 // Update takes the representation of a clusterDomainClaim and updates it. Returns the server's representation of the clusterDomainClaim, and an error, if there is any.
 func (c *FakeClusterDomainClaims) Update(ctx context.Context, clusterDomainClaim *v1alpha1.ClusterDomainClaim, opts v1.UpdateOptions) (result *v1alpha1.ClusterDomainClaim, err error) {
+	emptyResult := &v1alpha1.ClusterDomainClaim{}
 	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(clusterdomainclaimsResource, clusterDomainClaim), &v1alpha1.ClusterDomainClaim{})
+		Invokes(testing.NewRootUpdateActionWithOptions(clusterdomainclaimsResource, clusterDomainClaim, opts), emptyResult)
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ClusterDomainClaim), err
 }
@@ -99,13 +102,13 @@ func (c *FakeClusterDomainClaims) Update(ctx context.Context, clusterDomainClaim
 // Delete takes name of the clusterDomainClaim and deletes it. Returns an error if one occurs.
 func (c *FakeClusterDomainClaims) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteAction(clusterdomainclaimsResource, name), &v1alpha1.ClusterDomainClaim{})
+		Invokes(testing.NewRootDeleteActionWithOptions(clusterdomainclaimsResource, name, opts), &v1alpha1.ClusterDomainClaim{})
 	return err
 }
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeClusterDomainClaims) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(clusterdomainclaimsResource, listOpts)
+	action := testing.NewRootDeleteCollectionActionWithOptions(clusterdomainclaimsResource, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1alpha1.ClusterDomainClaimList{})
 	return err
@@ -113,10 +116,11 @@ func (c *FakeClusterDomainClaims) DeleteCollection(ctx context.Context, opts v1.
 
 // Patch applies the patch and returns the patched clusterDomainClaim.
 func (c *FakeClusterDomainClaims) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ClusterDomainClaim, err error) {
+	emptyResult := &v1alpha1.ClusterDomainClaim{}
 	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(clusterdomainclaimsResource, name, pt, data, subresources...), &v1alpha1.ClusterDomainClaim{})
+		Invokes(testing.NewRootPatchSubresourceActionWithOptions(clusterdomainclaimsResource, name, pt, data, opts, subresources...), emptyResult)
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ClusterDomainClaim), err
 }

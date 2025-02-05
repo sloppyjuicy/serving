@@ -22,7 +22,7 @@ import (
 	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // fakeFilteredFactoryGenerator produces a file of listers for a given GroupVersion and
@@ -116,14 +116,15 @@ func withInformerFactory(ctx {{.contextContext|raw}}) {{.contextContext|raw}} {
 	}
 	labelSelectors := untyped.([]string)
 	for _, selector := range labelSelectors {
+        selectorVal := selector
 		opts := []{{.informersSharedInformerOption|raw}}{}
 		if {{.injectionHasNamespace|raw}}(ctx) {
 			opts = append(opts, {{.informersWithNamespace|raw}}({{.injectionGetNamespace|raw}}(ctx)))
 		}		
 		opts = append(opts, {{.informersWithTweakListOptions|raw}}(func(l *{{.metav1ListOptions|raw}}) {
-			l.LabelSelector = selector
+			l.LabelSelector = selectorVal
 		}))
-		ctx = context.WithValue(ctx, {{.factoryKey|raw}}{Selector: selector},
+		ctx = context.WithValue(ctx, {{.factoryKey|raw}}{Selector: selectorVal},
 			{{.informersNewSharedInformerFactoryWithOptions|raw}}(c, {{.controllerGetResyncPeriod|raw}}(ctx), opts...))
 	}
 	return ctx

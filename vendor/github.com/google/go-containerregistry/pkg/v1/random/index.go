@@ -31,15 +31,16 @@ type randomIndex struct {
 
 // Index returns a pseudo-randomly generated ImageIndex with count images, each
 // having the given number of layers of size byteSize.
-func Index(byteSize, layers, count int64) (v1.ImageIndex, error) {
+func Index(byteSize, layers, count int64, options ...Option) (v1.ImageIndex, error) {
 	manifest := v1.IndexManifest{
 		SchemaVersion: 2,
+		MediaType:     types.OCIImageIndex,
 		Manifests:     []v1.Descriptor{},
 	}
 
 	images := make(map[v1.Hash]v1.Image)
 	for i := int64(0); i < count; i++ {
-		img, err := Image(byteSize, layers)
+		img, err := Image(byteSize, layers, options...)
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +74,7 @@ func Index(byteSize, layers, count int64) (v1.ImageIndex, error) {
 }
 
 func (i *randomIndex) MediaType() (types.MediaType, error) {
-	return types.OCIImageIndex, nil
+	return i.manifest.MediaType, nil
 }
 
 func (i *randomIndex) Digest() (v1.Hash, error) {

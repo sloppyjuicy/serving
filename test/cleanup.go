@@ -73,6 +73,10 @@ func TearDown(clients *Clients, names *ResourceNames) {
 // EnsureCleanup will run the provided cleanup function when the test ends,
 // either via t.Cleanup or on interrupt via CleanupOnInterrupt.
 func EnsureCleanup(t *testing.T, cleanup func()) {
+	if t.Failed() && ServingFlags.SkipCleanupOnFail {
+		t.Log("skipping cleanup")
+		return
+	}
 	t.Cleanup(cleanup)
 	CleanupOnInterrupt(cleanup)
 }
@@ -80,5 +84,7 @@ func EnsureCleanup(t *testing.T, cleanup func()) {
 // EnsureTearDown will delete created names when the test ends, either via
 // t.Cleanup, or on interrupt via CleanupOnInterrupt.
 func EnsureTearDown(t *testing.T, clients *Clients, names *ResourceNames) {
-	EnsureCleanup(t, func() { TearDown(clients, names) })
+	EnsureCleanup(t, func() {
+		TearDown(clients, names)
+	})
 }

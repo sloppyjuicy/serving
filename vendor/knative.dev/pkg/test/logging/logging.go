@@ -33,7 +33,7 @@ import (
 	"go.opencensus.io/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -67,6 +67,8 @@ func (e *zapMetricExporter) ExportView(vd *view.Data) {
 
 // GetEmitableSpan starts and returns a trace.Span with a name that
 // is used by the ExportSpan method to emit the span.
+//
+//nolint:spancheck
 func GetEmitableSpan(ctx context.Context, metricName string) *trace.Span {
 	_, span := trace.StartSpan(ctx, emitableSpanNamePrefix+metricName)
 	return span

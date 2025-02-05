@@ -31,40 +31,36 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	netcfg "knative.dev/networking/pkg/config"
 	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
-	autoscalingv1alpha1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
-
 	fakepodsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/pod/fake"
-
-	network "knative.dev/networking/pkg"
 	logtesting "knative.dev/pkg/logging/testing"
+	autoscalingv1alpha1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
 	"knative.dev/serving/pkg/apis/serving"
 	"knative.dev/serving/pkg/resources"
 
 	. "knative.dev/pkg/reconciler/testing"
 )
 
-var (
-	testStats = []Stat{{
-		PodName:                          "pod-1",
-		AverageConcurrentRequests:        3.0,
-		AverageProxiedConcurrentRequests: 2.0,
-		RequestCount:                     5,
-		ProxiedRequestCount:              4,
-	}, {
-		PodName:                          "pod-2",
-		AverageConcurrentRequests:        5.0,
-		AverageProxiedConcurrentRequests: 4.0,
-		RequestCount:                     7,
-		ProxiedRequestCount:              6,
-	}, {
-		PodName:                          "pod-3",
-		AverageConcurrentRequests:        3.0,
-		AverageProxiedConcurrentRequests: 2.0,
-		RequestCount:                     5,
-		ProxiedRequestCount:              4,
-	}}
-)
+var testStats = []Stat{{
+	PodName:                          "pod-1",
+	AverageConcurrentRequests:        3.0,
+	AverageProxiedConcurrentRequests: 2.0,
+	RequestCount:                     5,
+	ProxiedRequestCount:              4,
+}, {
+	PodName:                          "pod-2",
+	AverageConcurrentRequests:        5.0,
+	AverageProxiedConcurrentRequests: 4.0,
+	RequestCount:                     7,
+	ProxiedRequestCount:              6,
+}, {
+	PodName:                          "pod-3",
+	AverageConcurrentRequests:        3.0,
+	AverageProxiedConcurrentRequests: 2.0,
+	RequestCount:                     5,
+	ProxiedRequestCount:              4,
+}}
 
 const (
 	testRevision  = "just-a-test-revision"
@@ -81,7 +77,7 @@ func testStatsWithTime(n int, youngestSecs float64) []Stat {
 		RequestCount:                     2,
 		ProxiedRequestCount:              4,
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := tmpl
 		s.PodName = "pod-" + strconv.Itoa(i)
 		s.AverageConcurrentRequests = float64((i + 1) * 2)
@@ -99,7 +95,7 @@ func TestNewServiceScraperWithClientHappyCase(t *testing.T) {
 	accessor := resources.NewPodAccessor(
 		fakepodsinformer.Get(ctx).Lister(),
 		testNamespace, testRevision)
-	sc := NewStatsScraper(metric, testRevision, accessor, false, network.MeshCompatibilityModeAuto, logtesting.TestLogger(t))
+	sc := NewStatsScraper(metric, testRevision, accessor, false, netcfg.MeshCompatibilityModeAuto, logtesting.TestLogger(t))
 	if svcS, want := sc.(*serviceScraper), urlFromTarget(testRevision+"-zhudex", testNamespace); svcS.url != want {
 		t.Errorf("scraper.url = %s, want: %s", svcS.url, want)
 	}
@@ -142,7 +138,7 @@ func TestPodDirectScrapeSuccess(t *testing.T) {
 	})
 
 	client := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
 
 	// No pods at all.
 	if stat, err := scraper.Scrape(defaultMetric.Spec.StableWindow); err != nil {
@@ -176,7 +172,7 @@ func TestPodDirectScrapeSomeFailButSuccess(t *testing.T) {
 	makePods(ctx, "pods-", 5, metav1.Now())
 
 	client := newTestScrapeClient(testStats, []error{nil, nil, errors.New("okay"), nil, nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
 		t.Fatal("Unexpected error from scraper.Scrape():", err)
@@ -219,7 +215,7 @@ func TestPodDirectScrapeAllFailWithMeshError(t *testing.T) {
 	})
 	makePods(ctx, "pods-", 4, metav1.Now())
 
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
 		t.Fatal("Unexpected error from scraper.Scrape():", err)
@@ -262,7 +258,7 @@ func TestPodDirectScrapeAllFailWithMeshErrorNoFallbackInDirectMode(t *testing.T)
 	})
 	makePods(ctx, "pods-", 4, metav1.Now())
 
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeDisabled, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeDisabled, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
 	if _, err := scraper.Scrape(defaultMetric.Spec.StableWindow); err == nil {
 		t.Fatal("Expected scrape to fail even though all pods return mesh-compatible errors since meshMode is disabled")
 	}
@@ -294,7 +290,7 @@ func TestPodAlwaysServiceScrapeInMeshMode(t *testing.T) {
 	})
 	makePods(ctx, "pods-", 4, metav1.Now())
 
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeEnabled, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeEnabled, direct, mesh, true /*podsAddressable*/, false /*passthroughLb*/)
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
 		t.Fatal("Unexpected error from scraper.Scrape():", err)
@@ -330,7 +326,7 @@ func TestPodDirectScrapeSomeFailWithNonMeshError(t *testing.T) {
 	makePods(ctx, "pods-", 4, metav1.Now())
 
 	client := newTestScrapeClient(testStats, []error{meshErr, nonMeshErr, meshErr, meshErr})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err == nil {
 		t.Fatal("Expected an error")
@@ -355,7 +351,7 @@ func TestPodDirectScrapePodsExhausted(t *testing.T) {
 	makePods(ctx, "pods-", 4, metav1.Now())
 
 	client := newTestScrapeClient(testStats, []error{nil, nil, errors.New("okay"), nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, false /*passthroughLb*/)
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err == nil {
 		t.Fatal("Expected an error")
@@ -381,7 +377,7 @@ func TestScrapeReportStatWhenAllCallsSucceed(t *testing.T) {
 
 	// Scrape will set a timestamp bigger than this.
 	client := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
 
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -416,7 +412,7 @@ func TestScrapeAllPodsYoungPods(t *testing.T) {
 	})
 	makePods(ctx, "pods-", numP, metav1.Now())
 
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
 		t.Fatal("Unexpected error from scraper.Scrape():", err)
@@ -449,7 +445,7 @@ func TestScrapeAllPodsOldPods(t *testing.T) {
 	makePods(ctx, "pods-", numP, metav1.Now())
 	direct := newTestScrapeClient(testStats, []error{errDirectScrapingNotAvailable}) // fall back to service scrape
 	mesh := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
 		t.Fatal("Unexpected error from scraper.Scrape():", err)
@@ -485,7 +481,7 @@ func TestScrapeSomePodsOldPods(t *testing.T) {
 	// Scrape will set a timestamp bigger than this.
 	direct := newTestScrapeClient(testStats, []error{errDirectScrapingNotAvailable}) // fall back to service scrape
 	mesh := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, direct, mesh, false /*podsAddressable*/, false /*passthroughLb*/)
 
 	got, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -515,7 +511,7 @@ func TestScrapeReportErrorCannotFindEnoughPods(t *testing.T) {
 	makePods(ctx, "pods-", 2, metav1.Now())
 
 	client := newTestScrapeClient(testStats[2:], []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err == nil {
@@ -539,9 +535,11 @@ func TestScrapeReportErrorIfAnyFails(t *testing.T) {
 	makePods(ctx, "pods-", 2, metav1.Now())
 
 	// 1 success and 10 failures so one scrape fails permanently through retries.
-	client := newTestScrapeClient(testStats, []error{nil, errTest, errTest,
-		errTest, errTest, errTest, errTest, errTest, errTest, errTest, errTest})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
+	client := newTestScrapeClient(testStats, []error{
+		nil, errTest, errTest,
+		errTest, errTest, errTest, errTest, errTest, errTest, errTest, errTest,
+	})
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if !errors.Is(err, errTest) {
@@ -553,7 +551,7 @@ func TestScrapeDoNotScrapeIfNoPodsFound(t *testing.T) {
 	ctx, cancel, _ := SetupFakeContextWithCancel(t)
 	t.Cleanup(cancel)
 	client := newTestScrapeClient(testStats, nil)
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, false /*podsAddressable*/, false /*passthroughLb*/)
 
 	stat, err := scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -587,7 +585,7 @@ func TestMixedPodShuffle(t *testing.T) {
 	t.Log("WantScrapes", wantScrapes)
 
 	client := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -630,7 +628,7 @@ func TestOldPodShuffle(t *testing.T) {
 	t.Log("WantScrapes", wantScrapes)
 
 	client := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -641,7 +639,7 @@ func TestOldPodShuffle(t *testing.T) {
 	}
 	// Store and reset.
 	firstRun := client.urls
-	client.urls = sets.NewString()
+	client.urls = sets.New[string]()
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -695,7 +693,7 @@ func TestOldPodsFallback(t *testing.T) {
 	client := newTestScrapeClient(testStats, func() []error {
 		r := make([]error, numPods)
 		// This will fail all the old pods.
-		for i := 0; i < oldPods; i++ {
+		for i := range oldPods {
 			r[i] = errors.New("bad-hair-day")
 		}
 		// But succeed all the youngs.
@@ -704,7 +702,7 @@ func TestOldPodsFallback(t *testing.T) {
 		}
 		return r
 	}())
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, client, true /*podsAddressable*/, false /*passthroughLb*/)
 
 	_, err = scraper.Scrape(defaultMetric.Spec.StableWindow)
 	if err != nil {
@@ -744,7 +742,7 @@ func TestPodDirectPassthroughScrapeSuccess(t *testing.T) {
 	})
 
 	client := newTestScrapeClient(testStats, []error{nil})
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, true /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, client, nil /* mesh not used */, true /*podsAddressable*/, true /*passthroughLb*/)
 
 	makePods(ctx, "pods-", 3, metav1.Now())
 	if _, err := scraper.Scrape(defaultMetric.Spec.StableWindow); err != nil {
@@ -778,7 +776,7 @@ func TestPodDirectPassthroughScrapeNoneSucceed(t *testing.T) {
 	})
 	makePods(ctx, "pods-", 4, metav1.Now())
 
-	scraper := serviceScraperForTest(ctx, t, network.MeshCompatibilityModeAuto, direct, mesh, true /*podsAddressable*/, true /*passthroughLb*/)
+	scraper := serviceScraperForTest(ctx, t, netcfg.MeshCompatibilityModeAuto, direct, mesh, true /*podsAddressable*/, true /*passthroughLb*/)
 
 	// No fallback to service scraping expected.
 	if _, err = scraper.Scrape(defaultMetric.Spec.StableWindow); err == nil {
@@ -790,8 +788,9 @@ func TestPodDirectPassthroughScrapeNoneSucceed(t *testing.T) {
 	}
 }
 
-func serviceScraperForTest(ctx context.Context, t *testing.T, meshMode network.MeshCompatibilityMode, directClient, meshClient scrapeClient,
-	podsAddressable bool, usePassthroughLb bool) *serviceScraper {
+func serviceScraperForTest(ctx context.Context, t *testing.T, meshMode netcfg.MeshCompatibilityMode, directClient, meshClient scrapeClient,
+	podsAddressable bool, usePassthroughLb bool,
+) *serviceScraper {
 	metric := testMetric()
 	accessor := resources.NewPodAccessor(
 		fakepodsinformer.Get(ctx).Lister(),
@@ -822,7 +821,7 @@ func newTestScrapeClient(stats []Stat, errs []error) *fakeScrapeClient {
 	return &fakeScrapeClient{
 		stats: stats,
 		errs:  errs,
-		urls:  sets.NewString(),
+		urls:  sets.New[string](),
 	}
 }
 
@@ -830,7 +829,7 @@ type fakeScrapeClient struct {
 	curIdx int
 	stats  []Stat
 	errs   []error
-	urls   sets.String
+	urls   sets.Set[string]
 	mutex  sync.Mutex
 }
 
@@ -852,7 +851,7 @@ func TestURLFromTarget(t *testing.T) {
 }
 
 func makePods(ctx context.Context, prefix string, n int, startTime metav1.Time) {
-	for i := 0; i < n; i++ {
+	for i := range n {
 		p := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      prefix + strconv.Itoa(i),

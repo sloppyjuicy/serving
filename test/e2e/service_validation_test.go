@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"knative.dev/serving/pkg/apis/config"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/pkg/webhook"
 	"knative.dev/serving/test"
@@ -50,9 +51,8 @@ func TestServiceValidationWithInvalidPodSpec(t *testing.T) {
 	test.EnsureTearDown(t, clients, &names)
 
 	// Setup Service
-	t.Log("Creating a new Service", names.Service)
 	service, err := v1test.CreateService(t, clients, names,
-		WithServiceAnnotation(webhook.PodSpecDryRunAnnotation, string(webhook.DryRunStrict)))
+		WithServiceAnnotation(config.DryRunFeatureKey, string(webhook.DryRunStrict)))
 	if err != nil {
 		t.Fatal("Create Service:", err)
 	}

@@ -71,7 +71,8 @@ func TestSingleConcurrency(t *testing.T) {
 		spoof.IsStatusOK,
 		"CheckSuccessfulResponse",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
+		spoof.WithHeader(test.ServingFlags.RequestHeader())); err != nil {
 		t.Fatalf("Error probing %s: %v", url, err)
 	}
 
@@ -85,7 +86,7 @@ func TestSingleConcurrency(t *testing.T) {
 	duration := 20 * time.Second
 	t.Logf("Maintaining %d concurrent requests for %v.", concurrency, duration)
 	group, egCtx := errgroup.WithContext(context.Background())
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		threadIdx := i
 		group.Go(func() error {
 			requestIdx := 0
@@ -94,6 +95,7 @@ func TestSingleConcurrency(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("error creating http request: %w", err)
 			}
+			spoof.WithHeader(test.ServingFlags.RequestHeader())(req)
 
 			for {
 				select {

@@ -18,14 +18,15 @@ package labeler
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/utils/clock"
 	"knative.dev/pkg/kmeta"
 
 	"knative.dev/pkg/tracker"
@@ -61,7 +62,8 @@ func newRevisionAccessor(
 	tracker tracker.Interface,
 	lister listers.RevisionLister,
 	indexer cache.Indexer,
-	clock clock.PassiveClock) *revisionAccessor {
+	clock clock.PassiveClock,
+) *revisionAccessor {
 	return &revisionAccessor{
 		client:  client,
 		tracker: tracker,
@@ -73,7 +75,8 @@ func newRevisionAccessor(
 
 // makeMetadataPatch makes a metadata map to be patched or nil if no changes are needed.
 func makeMetadataPatch(
-	acc kmeta.Accessor, routeName string, addRoutingState, remove bool, clock clock.PassiveClock) (map[string]interface{}, error) {
+	acc kmeta.Accessor, routeName string, addRoutingState, remove bool, clock clock.PassiveClock,
+) (map[string]interface{}, error) {
 	labels := map[string]interface{}{}
 	annotations := map[string]interface{}{}
 
@@ -98,7 +101,6 @@ func makeMetadataPatch(
 
 // markRoutingState updates the RoutingStateLabel and bumps the modified time annotation.
 func markRoutingState(acc kmeta.Accessor, clock clock.PassiveClock, diffLabels, diffAnn map[string]interface{}) {
-
 	hasRoute := acc.GetAnnotations()[serving.RoutesAnnotationKey] != ""
 	if val, has := diffAnn[serving.RoutesAnnotationKey]; has {
 		hasRoute = val != nil
@@ -128,7 +130,9 @@ func updateRouteAnnotation(acc kmeta.Accessor, routeName string, diffAnn map[str
 			return
 		}
 		valSet.Delete(routeName)
-		diffAnn[serving.RoutesAnnotationKey] = strings.Join(valSet.UnsortedList(), ",")
+		routeNames := valSet.UnsortedList()
+		sort.Strings(routeNames)
+		diffAnn[serving.RoutesAnnotationKey] = strings.Join(routeNames, ",")
 
 	case !has && !remove:
 		if len(valSet) == 0 {
@@ -136,7 +140,9 @@ func updateRouteAnnotation(acc kmeta.Accessor, routeName string, diffAnn map[str
 			return
 		}
 		valSet.Insert(routeName)
-		diffAnn[serving.RoutesAnnotationKey] = strings.Join(valSet.UnsortedList(), ",")
+		routeNames := valSet.UnsortedList()
+		sort.Strings(routeNames)
+		diffAnn[serving.RoutesAnnotationKey] = strings.Join(routeNames, ",")
 	}
 }
 
@@ -191,7 +197,8 @@ func newConfigurationAccessor(
 	tracker tracker.Interface,
 	lister listers.ConfigurationLister,
 	indexer cache.Indexer,
-	clock clock.PassiveClock) *configurationAccessor {
+	clock clock.PassiveClock,
+) *configurationAccessor {
 	return &configurationAccessor{
 		client:  client,
 		tracker: tracker,
@@ -219,12 +226,12 @@ func (c *configurationAccessor) list(ns, routeName string, state v1.RoutingState
 
 // GetListAnnValue finds a given value in a comma-separated annotation.
 // returns the entire annotation value and true if found.
-func GetListAnnValue(annotations map[string]string, key string) sets.String {
+func GetListAnnValue(annotations map[string]string, key string) sets.Set[string] {
 	l := annotations[key]
 	if l == "" {
-		return sets.String{}
+		return sets.Set[string]{}
 	}
-	return sets.NewString(strings.Split(l, ",")...)
+	return sets.New(strings.Split(l, ",")...)
 }
 
 // patch implements Accessor

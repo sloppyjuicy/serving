@@ -24,7 +24,8 @@ import (
 	"net/http"
 	"sync"
 
-	network "knative.dev/networking/pkg"
+	nethttp "knative.dev/networking/pkg/http"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 var errUnsupportedMetricType = errors.New("unsupported metric type")
@@ -51,7 +52,7 @@ func newHTTPScrapeClient(httpClient *http.Client) *httpScrapeClient {
 }
 
 func (c *httpScrapeClient) Do(req *http.Request) (Stat, error) {
-	req.Header.Add("Accept", network.ProtoAcceptContent)
+	req.Header.Add("Accept", netheader.ProtobufMIMEType)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return emptyStat, err
@@ -60,10 +61,10 @@ func (c *httpScrapeClient) Do(req *http.Request) (Stat, error) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return emptyStat, scrapeError{
 			error:       fmt.Errorf("GET request for URL %q returned HTTP status %v", req.URL.String(), resp.StatusCode),
-			mightBeMesh: network.IsPotentialMeshErrorResponse(resp),
+			mightBeMesh: nethttp.IsPotentialMeshErrorResponse(resp),
 		}
 	}
-	if resp.Header.Get("Content-Type") != network.ProtoAcceptContent {
+	if resp.Header.Get("Content-Type") != netheader.ProtobufMIMEType {
 		return emptyStat, errUnsupportedMetricType
 	}
 	return statFromProto(resp.Body)
@@ -81,7 +82,9 @@ func statFromProto(body io.Reader) (Stat, error) {
 	b := pool.Get().(*bytes.Buffer)
 	b.Reset()
 	defer pool.Put(b)
-	_, err := b.ReadFrom(body)
+	// 6 8-byte fields (+2 bytes marshalling), one hostname, 20 bytes extra space
+	r := io.LimitedReader{R: body, N: 6*10 + 256 + 20}
+	_, err := b.ReadFrom(&r)
 	if err != nil {
 		return emptyStat, fmt.Errorf("reading body failed: %w", err)
 	}

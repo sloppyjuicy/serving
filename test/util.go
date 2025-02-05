@@ -31,6 +31,7 @@ import (
 	"knative.dev/pkg/signals"
 	"knative.dev/pkg/test/logging"
 	"knative.dev/pkg/test/spoof"
+	"knative.dev/serving/pkg/apis/config"
 )
 
 const (
@@ -43,7 +44,7 @@ const (
 	HelloVolumePath = "/hello/world"
 
 	caSecretNamespace = "cert-manager"
-	caSecretName      = "ca-key-pair"
+	caSecretName      = "ca-key-pair" // #nosec G101
 )
 
 // util.go provides shared utilities methods across knative serving test
@@ -86,7 +87,7 @@ func TLSClientConfig(ctx context.Context, logf logging.FormatLogger, clients *Cl
 	if !rootCAs.AppendCertsFromPEM(PemDataFromSecret(ctx, logf, clients, caSecretNamespace, caSecretName)) {
 		logf("Failed to add the certificate to the root CA")
 	}
-	return &tls.Config{RootCAs: rootCAs}
+	return &tls.Config{RootCAs: rootCAs} // #nosec G402
 }
 
 // PemDataFromSecret gets pem data from secret.
@@ -105,4 +106,14 @@ func AddTestAnnotation(t testing.TB, m metav1.ObjectMeta) {
 	kmeta.UnionMaps(m.Annotations, map[string]string{
 		testAnnotation: t.Name(),
 	})
+}
+
+// UserContainerRestarted checks if the container was restarted.
+func UserContainerRestarted(pod *corev1.Pod) bool {
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == config.DefaultUserContainerName && status.RestartCount > 0 {
+			return true
+		}
+	}
+	return false
 }

@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// PodTemplateApplyConfiguration represents an declarative configuration of the PodTemplate type for use
+// PodTemplateApplyConfiguration represents a declarative configuration of the PodTemplate type for use
 // with apply.
 type PodTemplateApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -35,7 +35,7 @@ type PodTemplateApplyConfiguration struct {
 	Template                         *PodTemplateSpecApplyConfiguration `json:"template,omitempty"`
 }
 
-// PodTemplate constructs an declarative configuration of the PodTemplate type for use with
+// PodTemplate constructs a declarative configuration of the PodTemplate type for use with
 // apply.
 func PodTemplate(name, namespace string) *PodTemplateApplyConfiguration {
 	b := &PodTemplateApplyConfiguration{}
@@ -49,7 +49,7 @@ func PodTemplate(name, namespace string) *PodTemplateApplyConfiguration {
 // ExtractPodTemplate extracts the applied configuration owned by fieldManager from
 // podTemplate. If no managedFields are found in podTemplate for fieldManager, a
 // PodTemplateApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // podTemplate must be a unmodified PodTemplate API object that was retrieved from the Kubernetes API.
@@ -58,8 +58,19 @@ func PodTemplate(name, namespace string) *PodTemplateApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractPodTemplate(podTemplate *apicorev1.PodTemplate, fieldManager string) (*PodTemplateApplyConfiguration, error) {
+	return extractPodTemplate(podTemplate, fieldManager, "")
+}
+
+// ExtractPodTemplateStatus is the same as ExtractPodTemplate except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractPodTemplateStatus(podTemplate *apicorev1.PodTemplate, fieldManager string) (*PodTemplateApplyConfiguration, error) {
+	return extractPodTemplate(podTemplate, fieldManager, "status")
+}
+
+func extractPodTemplate(podTemplate *apicorev1.PodTemplate, fieldManager string, subresource string) (*PodTemplateApplyConfiguration, error) {
 	b := &PodTemplateApplyConfiguration{}
-	err := managedfields.ExtractInto(podTemplate, internal.Parser().Type("io.k8s.api.core.v1.PodTemplate"), fieldManager, b)
+	err := managedfields.ExtractInto(podTemplate, internal.Parser().Type("io.k8s.api.core.v1.PodTemplate"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -111,15 +122,6 @@ func (b *PodTemplateApplyConfiguration) WithGenerateName(value string) *PodTempl
 func (b *PodTemplateApplyConfiguration) WithNamespace(value string) *PodTemplateApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *PodTemplateApplyConfiguration) WithSelfLink(value string) *PodTemplateApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -232,15 +234,6 @@ func (b *PodTemplateApplyConfiguration) WithFinalizers(values ...string) *PodTem
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *PodTemplateApplyConfiguration) WithClusterName(value string) *PodTemplateApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *PodTemplateApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -253,4 +246,10 @@ func (b *PodTemplateApplyConfiguration) ensureObjectMetaApplyConfigurationExists
 func (b *PodTemplateApplyConfiguration) WithTemplate(value *PodTemplateSpecApplyConfiguration) *PodTemplateApplyConfiguration {
 	b.Template = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *PodTemplateApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

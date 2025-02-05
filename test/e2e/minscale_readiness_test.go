@@ -83,7 +83,7 @@ func TestMinScale(t *testing.T) {
 	}
 
 	revName := latestRevisionName(t, clients, names.Config, "")
-	serviceName := privateServiceName(t, clients, revName)
+	serviceName := PrivateServiceName(t, clients, revName)
 
 	t.Log("Waiting for revision to scale to minScale before becoming ready")
 	if lr, err := waitForDesiredScale(clients, serviceName, gte(minScale)); err != nil {
@@ -116,7 +116,7 @@ func TestMinScale(t *testing.T) {
 	}
 
 	newRevName := latestRevisionName(t, clients, names.Config, revName)
-	newServiceName := privateServiceName(t, clients, newRevName)
+	newServiceName := PrivateServiceName(t, clients, newRevName)
 
 	t.Log("Waiting for new revision to scale to minScale after update")
 	if lr, err := waitForDesiredScale(clients, newServiceName, gte(minScale)); err != nil {
@@ -208,33 +208,16 @@ func latestRevisionName(t *testing.T, clients *test.Clients, configName, oldRevN
 	return config.Status.LatestCreatedRevisionName
 }
 
-func privateServiceName(t *testing.T, clients *test.Clients, revisionName string) string {
-	var privateServiceName string
-
-	if err := wait.PollImmediate(time.Second, 1*time.Minute, func() (bool, error) {
-		sks, err := clients.NetworkingClient.ServerlessServices.Get(context.Background(), revisionName, metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		privateServiceName = sks.Status.PrivateServiceName
-		return privateServiceName != "", nil
-	}); err != nil {
-		t.Fatalf("Error retrieving sks %q: %v", revisionName, err)
-	}
-
-	return privateServiceName
-}
-
 // waitForDesiredScale returns the last observed number of pods and/or error if the cond
 // callback is never satisfied.
 func waitForDesiredScale(clients *test.Clients, serviceName string, cond func(int) bool) (latestReady int, err error) {
 	endpoints := clients.KubeClient.CoreV1().Endpoints(test.ServingFlags.TestNamespace)
 
 	// See https://github.com/knative/serving/issues/7727#issuecomment-706772507 for context.
-	return latestReady, wait.PollImmediate(250*time.Millisecond, 3*time.Minute, func() (bool, error) {
+	return latestReady, wait.PollUntilContextTimeout(context.Background(), 250*time.Millisecond, 3*time.Minute, true, func(context.Context) (bool, error) {
 		endpoint, err := endpoints.Get(context.Background(), serviceName, metav1.GetOptions{})
 		if err != nil {
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 		latestReady = resources.ReadyAddressCount(endpoint)
 		return cond(latestReady), nil
@@ -244,10 +227,10 @@ func waitForDesiredScale(clients *test.Clients, serviceName string, cond func(in
 func ensureDesiredScale(clients *test.Clients, t *testing.T, serviceName string, cond func(int) bool) (latestReady int, observed bool) {
 	endpoints := clients.KubeClient.CoreV1().Endpoints(test.ServingFlags.TestNamespace)
 
-	err := wait.PollImmediate(250*time.Millisecond, 10*time.Second, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), 250*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
 		endpoint, err := endpoints.Get(context.Background(), serviceName, metav1.GetOptions{})
 		if err != nil {
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		if latestReady = resources.ReadyAddressCount(endpoint); !cond(latestReady) {
@@ -256,9 +239,9 @@ func ensureDesiredScale(clients *test.Clients, t *testing.T, serviceName string,
 
 		return false, nil
 	})
-	if !errors.Is(err, wait.ErrWaitTimeout) {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Log("PollError =", err)
 	}
 
-	return latestReady, errors.Is(err, wait.ErrWaitTimeout)
+	return latestReady, errors.Is(err, context.DeadlineExceeded)
 }

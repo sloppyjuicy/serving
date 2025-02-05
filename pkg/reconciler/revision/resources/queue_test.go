@@ -32,8 +32,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
+	netapi "knative.dev/networking/pkg/apis/networking"
+	netcfg "knative.dev/networking/pkg/config"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/metrics"
@@ -54,7 +55,7 @@ import (
 
 var (
 	testProbe = &corev1.Probe{
-		Handler: corev1.Handler{
+		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{
 				Host: "127.0.0.1",
 			},
@@ -86,7 +87,7 @@ func TestMakeQueueContainer(t *testing.T) {
 		name string
 		rev  *v1.Revision
 		lc   logging.Config
-		nc   network.Config
+		nc   netcfg.Config
 		oc   metrics.ObservabilityConfig
 		dc   deployment.Config
 		fc   apicfg.Features
@@ -102,14 +103,21 @@ func TestMakeQueueContainer(t *testing.T) {
 			})
 		}),
 	}, {
-		name: "custom sidecar image, container port, protocol",
+		name: "custom readiness probe port",
 		rev: revision("bar", "foo",
 			withContainers([]corev1.Container{{
-				Name:           servingContainerName,
-				ReadinessProbe: testProbe,
+				Name: servingContainerName,
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						TCPSocket: &corev1.TCPSocketAction{
+							Host: "127.0.0.1",
+							Port: intstr.FromInt(8087),
+						},
+					},
+				},
 				Ports: []corev1.ContainerPort{{
 					ContainerPort: 1955,
-					Name:          string(networking.ProtocolH2C),
+					Name:          string(netapi.ProtocolH2C),
 				}},
 			}})),
 		dc: deployment.Config{
@@ -117,8 +125,31 @@ func TestMakeQueueContainer(t *testing.T) {
 		},
 		want: queueContainer(func(c *corev1.Container) {
 			c.Image = "alpine"
-			c.Ports = append(queueNonServingPorts, queueHTTP2Port)
-			c.ReadinessProbe.Handler.HTTPGet.Port.IntVal = queueHTTP2Port.ContainerPort
+			c.Ports = append(queueNonServingPorts, queueHTTP2Port, queueHTTPSPort)
+			c.ReadinessProbe.ProbeHandler.HTTPGet.Port.IntVal = queueHTTP2Port.ContainerPort
+			c.Env = env(map[string]string{
+				"USER_PORT":          "1955",
+				"QUEUE_SERVING_PORT": "8013",
+			})
+		}),
+	}, {
+		name: "custom sidecar image, container port, protocol",
+		rev: revision("bar", "foo",
+			withContainers([]corev1.Container{{
+				Name:           servingContainerName,
+				ReadinessProbe: testProbe,
+				Ports: []corev1.ContainerPort{{
+					ContainerPort: 1955,
+					Name:          string(netapi.ProtocolH2C),
+				}},
+			}})),
+		dc: deployment.Config{
+			QueueSidecarImage: "alpine",
+		},
+		want: queueContainer(func(c *corev1.Container) {
+			c.Image = "alpine"
+			c.Ports = append(queueNonServingPorts, queueHTTP2Port, queueHTTPSPort)
+			c.ReadinessProbe.ProbeHandler.HTTPGet.Port.IntVal = queueHTTP2Port.ContainerPort
 			c.Env = env(map[string]string{
 				"USER_PORT":          "1955",
 				"QUEUE_SERVING_PORT": "8013",
@@ -239,7 +270,7 @@ func TestMakeQueueContainer(t *testing.T) {
 			c.Env = env(map[string]string{
 				"ENABLE_PROFILING": "true",
 			})
-			c.Ports = append(queueNonServingPorts, profilingPort, queueHTTPPort)
+			c.Ports = append(queueNonServingPorts, profilingPort, queueHTTPPort, queueHTTPSPort)
 		}),
 	}, {
 		name: "custom TimeoutSeconds",
@@ -255,7 +286,33 @@ func TestMakeQueueContainer(t *testing.T) {
 			})
 		}),
 	}, {
-		name: "default resource config",
+		name: "custom ResponseStartTimeoutSeconds",
+		rev: revision("bar", "foo",
+			withContainers(containers),
+			func(revision *v1.Revision) {
+				revision.Spec.ResponseStartTimeoutSeconds = ptr.Int64(77)
+			},
+		),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{
+				"REVISION_RESPONSE_START_TIMEOUT_SECONDS": "77",
+			})
+		}),
+	}, {
+		name: "custom IdleTimeoutSeconds",
+		rev: revision("bar", "foo",
+			withContainers(containers),
+			func(revision *v1.Revision) {
+				revision.Spec.IdleTimeoutSeconds = ptr.Int64(99)
+			},
+		),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{
+				"REVISION_IDLE_TIMEOUT_SECONDS": "99",
+			})
+		}),
+	}, {
+		name: "default resource config with feature qp defaults disabled",
 		rev: revision("bar", "foo",
 			withContainers(containers)),
 		dc: deployment.Config{
@@ -264,9 +321,29 @@ func TestMakeQueueContainer(t *testing.T) {
 		want: queueContainer(func(c *corev1.Container) {
 			c.Env = env(map[string]string{})
 			c.Resources.Requests = corev1.ResourceList{
-				corev1.ResourceCPU: resource.MustParse("25m"),
+				corev1.ResourceCPU: deployment.QueueSidecarCPURequestDefault,
 			}
-			c.Resources.Limits = nil
+		}),
+	}, {
+		name: "resource config with feature qp defaults enabled",
+		rev: revision("bar", "foo",
+			withContainers(containers)),
+		dc: deployment.Config{
+			QueueSidecarCPURequest: &deployment.QueueSidecarCPURequestDefault,
+		},
+		fc: apicfg.Features{
+			QueueProxyResourceDefaults: apicfg.Enabled,
+		},
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{})
+			c.Resources.Requests = corev1.ResourceList{
+				corev1.ResourceCPU:    deployment.QueueSidecarCPURequestDefault,
+				corev1.ResourceMemory: deployment.QueueSidecarMemoryRequestDefault,
+			}
+			c.Resources.Limits = corev1.ResourceList{
+				corev1.ResourceCPU:    deployment.QueueSidecarCPULimitDefault,
+				corev1.ResourceMemory: deployment.QueueSidecarMemoryLimitDefault,
+			}
 		}),
 	}, {
 		name: "overridden resources",
@@ -314,16 +391,25 @@ func TestMakeQueueContainer(t *testing.T) {
 			})
 		}),
 	}, {
-		name: "set concurrency state endpoint",
+		name: "HTTP1 full duplex enabled",
+		rev: revision("bar", "foo",
+			withContainers(containers),
+			WithRevisionAnnotations(map[string]string{apicfg.AllowHTTPFullDuplexFeatureKey: string(apicfg.Enabled)})),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{
+				"ENABLE_HTTP_FULL_DUPLEX": "true",
+			})
+		}),
+	}, {
+		name: "set root ca",
 		rev: revision("bar", "foo",
 			withContainers(containers)),
 		dc: deployment.Config{
-			ConcurrencyStateEndpoint: "freeze-proxy",
+			QueueSidecarRootCA: "xyz",
 		},
 		want: queueContainer(func(c *corev1.Container) {
 			c.Env = env(map[string]string{
-				"CONCURRENCY_STATE_ENDPOINT":   "freeze-proxy",
-				"CONCURRENCY_STATE_TOKEN_PATH": "/var/run/secrets/tokens/state-token",
+				"ROOT_CA": "xyz",
 			})
 		}),
 	}, {
@@ -339,6 +425,20 @@ func TestMakeQueueContainer(t *testing.T) {
 		want: queueContainer(func(c *corev1.Container) {
 			c.Env = env(map[string]string{
 				"ENABLE_HTTP2_AUTO_DETECTION": "false",
+			})
+		}),
+	}, {
+		name: "multi container probing enabled",
+		rev:  revision("bar", "foo", withContainers(containers)),
+		fc: apicfg.Features{
+			MultiContainerProbing: apicfg.Enabled,
+		},
+		dc: deployment.Config{
+			ProgressDeadline: 0 * time.Second,
+		},
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{
+				"ENABLE_MULTI_CONTAINER_PROBES": "true",
 			})
 		}),
 	}}
@@ -367,10 +467,15 @@ func TestMakeQueueContainer(t *testing.T) {
 				t.Fatal("makeQueueContainer returned error:", err)
 			}
 
+			expectedProbe := probeJSON(test.rev.Spec.GetContainer())
+			if test.fc.MultiContainerProbing == apicfg.Enabled {
+				expectedProbe = "[" + expectedProbe + "]"
+			}
 			test.want.Env = append(test.want.Env, corev1.EnvVar{
 				Name:  "SERVING_READINESS_PROBE",
-				Value: probeJSON(test.rev.Spec.GetContainer()),
+				Value: expectedProbe,
 			})
+
 			sortEnv(got.Env)
 			sortEnv(test.want.Env)
 			if got, want := *got, test.want; !cmp.Equal(got, want, quantityComparer) {
@@ -401,8 +506,8 @@ func TestMakeQueueContainerWithPercentageAnnotation(t *testing.T) {
 							corev1.ResourceMemory: resource.MustParse("2Gi"),
 							corev1.ResourceCPU:    resource.MustParse("2"),
 						},
-					}},
-				}
+					},
+				}}
 			}),
 		want: queueContainer(func(c *corev1.Container) {
 			c.Env = env(map[string]string{})
@@ -513,13 +618,129 @@ func TestMakeQueueContainerWithPercentageAnnotation(t *testing.T) {
 	}
 }
 
+func TestMakeQueueContainerWithResourceAnnotations(t *testing.T) {
+	tests := []struct {
+		name string
+		rev  *v1.Revision
+		want corev1.Container
+		dc   deployment.Config
+	}{{
+		name: "resources defined via annotations",
+		rev: revision("bar", "foo",
+			func(revision *v1.Revision) {
+				revision.Annotations = map[string]string{
+					serving.QueueSidecarCPUResourceRequestAnnotationKey:              "1",
+					serving.QueueSidecarCPUResourceLimitAnnotationKey:                "2",
+					serving.QueueSidecarMemoryResourceRequestAnnotationKey:           "1Gi",
+					serving.QueueSidecarMemoryResourceLimitAnnotationKey:             "2Gi",
+					serving.QueueSidecarEphemeralStorageResourceRequestAnnotationKey: "500Mi",
+					serving.QueueSidecarEphemeralStorageResourceLimitAnnotationKey:   "600Mi",
+				}
+				revision.Spec.PodSpec.Containers = []corev1.Container{{
+					Name:           servingContainerName,
+					ReadinessProbe: testProbe,
+				}}
+			}),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{})
+			c.Resources.Requests = corev1.ResourceList{
+				corev1.ResourceMemory:           resource.MustParse("1Gi"),
+				corev1.ResourceCPU:              resource.MustParse("1"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("500Mi"),
+			}
+			c.Resources.Limits = corev1.ResourceList{
+				corev1.ResourceMemory:           resource.MustParse("2Gi"),
+				corev1.ResourceCPU:              resource.MustParse("2"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("600Mi"),
+			}
+		}),
+	}, {
+		name: "resources defined via annotations with bad values ignored",
+		rev: revision("bar", "foo",
+			func(revision *v1.Revision) {
+				revision.Annotations = map[string]string{
+					serving.QueueSidecarCPUResourceRequestAnnotationKey:    "zzz",
+					serving.QueueSidecarCPUResourceLimitAnnotationKey:      "2",
+					serving.QueueSidecarMemoryResourceRequestAnnotationKey: "Gdx",
+					serving.QueueSidecarMemoryResourceLimitAnnotationKey:   "2Gi",
+				}
+				revision.Spec.PodSpec.Containers = []corev1.Container{{
+					Name:           servingContainerName,
+					ReadinessProbe: testProbe,
+				}}
+			}),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{})
+			c.Resources.Limits = corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+				corev1.ResourceCPU:    resource.MustParse("2"),
+			}
+		}),
+	}, {
+		name: "resources defined via annotations mixed with percentage annotation",
+		rev: revision("bar", "foo",
+			func(revision *v1.Revision) {
+				revision.Annotations = map[string]string{
+					serving.QueueSidecarCPUResourceLimitAnnotationKey:    "1",
+					serving.QueueSidecarMemoryResourceLimitAnnotationKey: "4Gi",
+					serving.QueueSidecarResourcePercentageAnnotationKey:  "50",
+				}
+				revision.Spec.PodSpec.Containers = []corev1.Container{{
+					Name:           servingContainerName,
+					ReadinessProbe: testProbe,
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("1Gi"),
+							corev1.ResourceCPU:    resource.MustParse("1"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("2Gi"),
+							corev1.ResourceCPU:    resource.MustParse("2"),
+						},
+					},
+				}}
+			}),
+		want: queueContainer(func(c *corev1.Container) {
+			c.Env = env(map[string]string{})
+			c.Resources.Requests = corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("200Mi"), // hits the boundary for max value
+				corev1.ResourceCPU:    resource.MustParse("100m"),  // hits the boundary for max value
+			}
+			c.Resources.Limits = corev1.ResourceList{ // enforce the desired limits
+				corev1.ResourceMemory: resource.MustParse("4Gi"),
+				corev1.ResourceCPU:    resource.MustParse("1"),
+			}
+		}),
+	}}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := revConfig()
+			cfg.Deployment = &test.dc
+			got, err := makeQueueContainer(test.rev, cfg)
+			if err != nil {
+				t.Fatal("makeQueueContainer returned error:", err)
+			}
+			test.want.Env = append(test.want.Env, corev1.EnvVar{
+				Name:  "SERVING_READINESS_PROBE",
+				Value: probeJSON(test.rev.Spec.GetContainer()),
+			})
+			sortEnv(got.Env)
+			sortEnv(test.want.Env)
+			if got, want := *got, test.want; !cmp.Equal(got, want, quantityComparer) {
+				t.Errorf("makeQueueContainer (-want, +got) =\n%s", cmp.Diff(want, got, quantityComparer))
+			}
+		})
+	}
+}
+
 func TestProbeGenerationHTTPDefaults(t *testing.T) {
 	rev := revision("bar", "foo",
 		func(revision *v1.Revision) {
 			revision.Spec.PodSpec.Containers = []corev1.Container{{
 				Name: servingContainerName,
 				ReadinessProbe: &corev1.Probe{
-					Handler: corev1.Handler{
+					ProbeHandler: corev1.ProbeHandler{
 						HTTPGet: &corev1.HTTPGetAction{
 							Path: "/",
 						},
@@ -531,16 +752,12 @@ func TestProbeGenerationHTTPDefaults(t *testing.T) {
 		})
 
 	expectedProbe := &corev1.Probe{
-		Handler: corev1.Handler{
+		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Host:   "127.0.0.1",
 				Path:   "/",
 				Port:   intstr.FromInt(int(v1.DefaultUserPort)),
 				Scheme: corev1.URISchemeHTTP,
-				HTTPHeaders: []corev1.HTTPHeader{{
-					Name:  network.KubeletProbeHeaderName,
-					Value: queue.Name,
-				}},
 			},
 		},
 		PeriodSeconds:  1,
@@ -557,11 +774,11 @@ func TestProbeGenerationHTTPDefaults(t *testing.T) {
 			"SERVING_READINESS_PROBE": string(wantProbeJSON),
 		})
 		c.ReadinessProbe = &corev1.Probe{
-			Handler: corev1.Handler{
+			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Port: intstr.FromInt(int(queueHTTPPort.ContainerPort)),
 					HTTPHeaders: []corev1.HTTPHeader{{
-						Name:  network.ProbeHeaderName,
+						Name:  netheader.ProbeKey,
 						Value: queue.Name,
 					}},
 				},
@@ -593,7 +810,7 @@ func TestProbeGenerationHTTP(t *testing.T) {
 					ContainerPort: userPort,
 				}},
 				ReadinessProbe: &corev1.Probe{
-					Handler: corev1.Handler{
+					ProbeHandler: corev1.ProbeHandler{
 						HTTPGet: &corev1.HTTPGetAction{
 							Path:   probePath,
 							Scheme: corev1.URISchemeHTTPS,
@@ -606,16 +823,12 @@ func TestProbeGenerationHTTP(t *testing.T) {
 		})
 
 	expectedProbe := &corev1.Probe{
-		Handler: corev1.Handler{
+		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Host:   "127.0.0.1",
 				Path:   probePath,
 				Port:   intstr.FromInt(userPort),
 				Scheme: corev1.URISchemeHTTPS,
-				HTTPHeaders: []corev1.HTTPHeader{{
-					Name:  network.KubeletProbeHeaderName,
-					Value: queue.Name,
-				}},
 			},
 		},
 		PeriodSeconds:  2,
@@ -633,11 +846,11 @@ func TestProbeGenerationHTTP(t *testing.T) {
 			"SERVING_READINESS_PROBE": string(wantProbeJSON),
 		})
 		c.ReadinessProbe = &corev1.Probe{
-			Handler: corev1.Handler{
+			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Port: intstr.FromInt(int(queueHTTPPort.ContainerPort)),
 					HTTPHeaders: []corev1.HTTPHeader{{
-						Name:  network.ProbeHeaderName,
+						Name:  netheader.ProbeKey,
 						Value: queue.Name,
 					}},
 				},
@@ -668,7 +881,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 	}{{
 		name: "knative tcp probe",
 		wantProbe: &corev1.Probe{
-			Handler: corev1.Handler{
+			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{
 					Host: "127.0.0.1",
 					Port: intstr.FromInt(userPort),
@@ -686,7 +899,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 						ContainerPort: userPort,
 					}},
 					ReadinessProbe: &corev1.Probe{
-						Handler: corev1.Handler{
+						ProbeHandler: corev1.ProbeHandler{
 							TCPSocket: &corev1.TCPSocketAction{},
 						},
 						PeriodSeconds:    0,
@@ -700,16 +913,16 @@ func TestTCPProbeGeneration(t *testing.T) {
 		},
 		want: queueContainer(func(c *corev1.Container) {
 			c.ReadinessProbe = &corev1.Probe{
-				Handler: corev1.Handler{
+				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
 						Port: intstr.FromInt(int(queueHTTPPort.ContainerPort)),
 						HTTPHeaders: []corev1.HTTPHeader{{
-							Name:  network.ProbeHeaderName,
+							Name:  netheader.ProbeKey,
 							Value: queue.Name,
 						}},
 					},
 				},
-				PeriodSeconds:    1,
+				PeriodSeconds:    0,
 				TimeoutSeconds:   0,
 				SuccessThreshold: 3,
 			}
@@ -723,7 +936,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 				Containers: []corev1.Container{{
 					Name: servingContainerName,
 					ReadinessProbe: &corev1.Probe{
-						Handler: corev1.Handler{
+						ProbeHandler: corev1.ProbeHandler{
 							TCPSocket: &corev1.TCPSocketAction{},
 						},
 						PeriodSeconds: 1,
@@ -732,7 +945,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 			},
 		},
 		wantProbe: &corev1.Probe{
-			Handler: corev1.Handler{
+			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{
 					Host: "127.0.0.1",
 					Port: intstr.FromInt(int(v1.DefaultUserPort)),
@@ -743,11 +956,11 @@ func TestTCPProbeGeneration(t *testing.T) {
 		},
 		want: queueContainer(func(c *corev1.Container) {
 			c.ReadinessProbe = &corev1.Probe{
-				Handler: corev1.Handler{
+				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
 						Port: intstr.FromInt(int(queueHTTPPort.ContainerPort)),
 						HTTPHeaders: []corev1.HTTPHeader{{
-							Name:  network.ProbeHeaderName,
+							Name:  netheader.ProbeKey,
 							Value: queue.Name,
 						}},
 					},
@@ -761,7 +974,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 	}, {
 		name: "user defined tcp probe",
 		wantProbe: &corev1.Probe{
-			Handler: corev1.Handler{
+			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{
 					Host: "127.0.0.1",
 					Port: intstr.FromInt(userPort),
@@ -782,7 +995,7 @@ func TestTCPProbeGeneration(t *testing.T) {
 						ContainerPort: userPort,
 					}},
 					ReadinessProbe: &corev1.Probe{
-						Handler: corev1.Handler{
+						ProbeHandler: corev1.ProbeHandler{
 							TCPSocket: &corev1.TCPSocketAction{},
 						},
 						PeriodSeconds:       2,
@@ -796,11 +1009,11 @@ func TestTCPProbeGeneration(t *testing.T) {
 		},
 		want: queueContainer(func(c *corev1.Container) {
 			c.ReadinessProbe = &corev1.Probe{
-				Handler: corev1.Handler{
+				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
 						Port: intstr.FromInt(int(queueHTTPPort.ContainerPort)),
 						HTTPHeaders: []corev1.HTTPHeader{{
-							Name:  network.ProbeHeaderName,
+							Name:  netheader.ProbeKey,
 							Value: queue.Name,
 						}},
 					},
@@ -846,38 +1059,48 @@ func TestTCPProbeGeneration(t *testing.T) {
 }
 
 var defaultEnv = map[string]string{
-	"CONCURRENCY_STATE_ENDPOINT":       "",
-	"CONCURRENCY_STATE_TOKEN_PATH":     "/var/run/secrets/tokens/state-token",
-	"CONTAINER_CONCURRENCY":            "0",
-	"ENABLE_HTTP2_AUTO_DETECTION":      "false",
-	"ENABLE_PROFILING":                 "false",
-	"METRICS_DOMAIN":                   metrics.Domain(),
-	"METRICS_COLLECTOR_ADDRESS":        "",
-	"QUEUE_SERVING_PORT":               "8012",
-	"REVISION_TIMEOUT_SECONDS":         "45",
-	"SERVING_CONFIGURATION":            "",
-	"SERVING_ENABLE_PROBE_REQUEST_LOG": "false",
-	"SERVING_ENABLE_REQUEST_LOG":       "false",
-	"SERVING_LOGGING_CONFIG":           "",
-	"SERVING_LOGGING_LEVEL":            "",
-	"SERVING_NAMESPACE":                "foo",
-	"SERVING_REQUEST_LOG_TEMPLATE":     "",
-	"SERVING_REQUEST_METRICS_BACKEND":  "",
-	"SERVING_REVISION":                 "bar",
-	"SERVING_SERVICE":                  "",
-	"SYSTEM_NAMESPACE":                 system.Namespace(),
-	"TRACING_CONFIG_BACKEND":           "",
-	"TRACING_CONFIG_DEBUG":             "false",
-	"TRACING_CONFIG_SAMPLE_RATE":       "0",
-	"TRACING_CONFIG_ZIPKIN_ENDPOINT":   "",
-	"USER_PORT":                        strconv.Itoa(v1.DefaultUserPort),
+	"CONTAINER_CONCURRENCY":                            "0",
+	"ENABLE_HTTP2_AUTO_DETECTION":                      "false",
+	"ENABLE_HTTP_FULL_DUPLEX":                          "false",
+	"ENABLE_PROFILING":                                 "false",
+	"METRICS_DOMAIN":                                   metrics.Domain(),
+	"METRICS_COLLECTOR_ADDRESS":                        "",
+	"QUEUE_SERVING_PORT":                               "8012",
+	"QUEUE_SERVING_TLS_PORT":                           "8112",
+	"REVISION_TIMEOUT_SECONDS":                         "45",
+	"REVISION_RESPONSE_START_TIMEOUT_SECONDS":          "0",
+	"REVISION_IDLE_TIMEOUT_SECONDS":                    "0",
+	"SERVING_CONFIGURATION":                            "",
+	"SERVING_ENABLE_PROBE_REQUEST_LOG":                 "false",
+	"SERVING_ENABLE_REQUEST_LOG":                       "false",
+	"SERVING_LOGGING_CONFIG":                           "",
+	"SERVING_LOGGING_LEVEL":                            "",
+	"SERVING_NAMESPACE":                                "foo",
+	"SERVING_REQUEST_LOG_TEMPLATE":                     "",
+	"SERVING_REQUEST_METRICS_BACKEND":                  "",
+	"SERVING_REQUEST_METRICS_REPORTING_PERIOD_SECONDS": "0",
+	"SERVING_REVISION":                                 "bar",
+	"SERVING_SERVICE":                                  "",
+	"SYSTEM_NAMESPACE":                                 system.Namespace(),
+	"TRACING_CONFIG_BACKEND":                           "",
+	"TRACING_CONFIG_DEBUG":                             "false",
+	"TRACING_CONFIG_SAMPLE_RATE":                       "0",
+	"TRACING_CONFIG_ZIPKIN_ENDPOINT":                   "",
+	"USER_PORT":                                        strconv.Itoa(v1.DefaultUserPort),
+	"ROOT_CA":                                          "",
+	"ENABLE_MULTI_CONTAINER_PROBES":                    "false",
 }
 
 func probeJSON(container *corev1.Container) string {
 	if container == nil {
 		return fmt.Sprintf(testProbeJSONTemplate, v1.DefaultUserPort)
 	}
-
+	if container.ReadinessProbe.TCPSocket != nil && container.ReadinessProbe.TCPSocket.Port.IntValue() != 0 {
+		return fmt.Sprintf(testProbeJSONTemplate, container.ReadinessProbe.TCPSocket.Port.IntVal)
+	}
+	if container.ReadinessProbe.HTTPGet != nil && container.ReadinessProbe.HTTPGet.Port.IntValue() != 0 {
+		return fmt.Sprintf(testProbeJSONTemplate, container.ReadinessProbe.HTTPGet.Port.IntVal)
+	}
 	if ports := container.Ports; len(ports) > 0 && ports[0].ContainerPort != 0 {
 		return fmt.Sprintf(testProbeJSONTemplate, ports[0].ContainerPort)
 	}
@@ -935,7 +1158,7 @@ func revConfig() *config.Config {
 		},
 		Deployment:    &deploymentConfig,
 		Logging:       &logConfig,
-		Network:       &network.Config{},
+		Network:       &netcfg.Config{},
 		Observability: &obsConfig,
 		Tracing:       &traceConfig,
 	}

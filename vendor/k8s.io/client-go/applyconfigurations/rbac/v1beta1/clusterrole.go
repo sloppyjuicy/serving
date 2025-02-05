@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// ClusterRoleApplyConfiguration represents an declarative configuration of the ClusterRole type for use
+// ClusterRoleApplyConfiguration represents a declarative configuration of the ClusterRole type for use
 // with apply.
 type ClusterRoleApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -36,7 +36,7 @@ type ClusterRoleApplyConfiguration struct {
 	AggregationRule                  *AggregationRuleApplyConfiguration `json:"aggregationRule,omitempty"`
 }
 
-// ClusterRole constructs an declarative configuration of the ClusterRole type for use with
+// ClusterRole constructs a declarative configuration of the ClusterRole type for use with
 // apply.
 func ClusterRole(name string) *ClusterRoleApplyConfiguration {
 	b := &ClusterRoleApplyConfiguration{}
@@ -49,7 +49,7 @@ func ClusterRole(name string) *ClusterRoleApplyConfiguration {
 // ExtractClusterRole extracts the applied configuration owned by fieldManager from
 // clusterRole. If no managedFields are found in clusterRole for fieldManager, a
 // ClusterRoleApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // clusterRole must be a unmodified ClusterRole API object that was retrieved from the Kubernetes API.
@@ -58,8 +58,19 @@ func ClusterRole(name string) *ClusterRoleApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractClusterRole(clusterRole *rbacv1beta1.ClusterRole, fieldManager string) (*ClusterRoleApplyConfiguration, error) {
+	return extractClusterRole(clusterRole, fieldManager, "")
+}
+
+// ExtractClusterRoleStatus is the same as ExtractClusterRole except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractClusterRoleStatus(clusterRole *rbacv1beta1.ClusterRole, fieldManager string) (*ClusterRoleApplyConfiguration, error) {
+	return extractClusterRole(clusterRole, fieldManager, "status")
+}
+
+func extractClusterRole(clusterRole *rbacv1beta1.ClusterRole, fieldManager string, subresource string) (*ClusterRoleApplyConfiguration, error) {
 	b := &ClusterRoleApplyConfiguration{}
-	err := managedfields.ExtractInto(clusterRole, internal.Parser().Type("io.k8s.api.rbac.v1beta1.ClusterRole"), fieldManager, b)
+	err := managedfields.ExtractInto(clusterRole, internal.Parser().Type("io.k8s.api.rbac.v1beta1.ClusterRole"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -110,15 +121,6 @@ func (b *ClusterRoleApplyConfiguration) WithGenerateName(value string) *ClusterR
 func (b *ClusterRoleApplyConfiguration) WithNamespace(value string) *ClusterRoleApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *ClusterRoleApplyConfiguration) WithSelfLink(value string) *ClusterRoleApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -231,15 +233,6 @@ func (b *ClusterRoleApplyConfiguration) WithFinalizers(values ...string) *Cluste
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *ClusterRoleApplyConfiguration) WithClusterName(value string) *ClusterRoleApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *ClusterRoleApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -265,4 +258,10 @@ func (b *ClusterRoleApplyConfiguration) WithRules(values ...*PolicyRuleApplyConf
 func (b *ClusterRoleApplyConfiguration) WithAggregationRule(value *AggregationRuleApplyConfiguration) *ClusterRoleApplyConfiguration {
 	b.AggregationRule = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *ClusterRoleApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

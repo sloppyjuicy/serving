@@ -24,9 +24,8 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
-
-	"go.uber.org/atomic"
 
 	"golang.org/x/sync/errgroup"
 	pkgTest "knative.dev/pkg/test"
@@ -108,6 +107,7 @@ type manager struct {
 	m                sync.RWMutex
 	probes           map[*url.URL]Prober
 	transportOptions []spoof.TransportOption
+	requestOptions   []spoof.RequestOption
 }
 
 var _ ProberManager = (*manager)(nil)
@@ -149,6 +149,9 @@ func (m *manager) Spawn(url *url.URL) Prober {
 		if err != nil {
 			return fmt.Errorf("failed to generate request: %w", err)
 		}
+		for _, o := range m.requestOptions {
+			o(req)
+		}
 
 		// We keep polling the domain and accumulate success rates
 		// to ultimately establish the SLI and compare to the SLO.
@@ -158,16 +161,16 @@ func (m *manager) Spawn(url *url.URL) Prober {
 				return nil
 			default:
 				res, err := client.Do(req)
-				if p.requests.Inc() == p.minimumProbes {
+				if p.requests.Add(1) == p.minimumProbes {
 					close(p.minDoneCh)
 				}
 				if err != nil {
 					p.logf("%q error: %v", p.url, err)
-					p.failures.Inc()
+					p.failures.Add(1)
 				} else if res.StatusCode != http.StatusOK {
 					p.logf("%q status = %d, want: %d", p.url, res.StatusCode, http.StatusOK)
 					p.logf("response: %s", res)
-					p.failures.Inc()
+					p.failures.Add(1)
 				}
 			}
 		}
@@ -212,18 +215,28 @@ func (m *manager) Foreach(f func(url *url.URL, p Prober)) {
 }
 
 // NewProberManager creates a new manager for probes.
-func NewProberManager(logf logging.FormatLogger, clients *Clients, minProbes int64, opts ...spoof.TransportOption) ProberManager {
-	return &manager{
+func NewProberManager(logf logging.FormatLogger, clients *Clients, minProbes int64, opts ...interface{}) ProberManager {
+	m := manager{
 		logf:             logf,
 		clients:          clients,
 		minProbes:        minProbes,
 		probes:           make(map[*url.URL]Prober),
-		transportOptions: opts,
+		transportOptions: []spoof.TransportOption{},
+		requestOptions:   []spoof.RequestOption{},
 	}
+	for _, opt := range opts {
+		switch o := opt.(type) {
+		case spoof.RequestOption:
+			m.requestOptions = append(m.requestOptions, o)
+		case spoof.TransportOption:
+			m.transportOptions = append(m.transportOptions, o)
+		}
+	}
+	return &m
 }
 
 // RunRouteProber starts a single Prober of the given domain.
-func RunRouteProber(logf logging.FormatLogger, clients *Clients, url *url.URL, opts ...spoof.TransportOption) Prober {
+func RunRouteProber(logf logging.FormatLogger, clients *Clients, url *url.URL, opts ...interface{}) Prober {
 	// Default to 10 probes
 	pm := NewProberManager(logf, clients, 10, opts...)
 	pm.Spawn(url)

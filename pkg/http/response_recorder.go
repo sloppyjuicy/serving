@@ -20,8 +20,7 @@ import (
 	"bufio"
 	"net"
 	"net/http"
-
-	"go.uber.org/atomic"
+	"sync/atomic"
 
 	"knative.dev/pkg/websocket"
 )
@@ -51,6 +50,11 @@ func NewResponseRecorder(w http.ResponseWriter, responseCode int) *ResponseRecor
 		writer:       w,
 		ResponseCode: responseCode,
 	}
+}
+
+// Unwrap returns the underlying writer
+func (rr *ResponseRecorder) Unwrap() http.ResponseWriter {
+	return rr.writer
 }
 
 // Flush flushes the buffer to the client.

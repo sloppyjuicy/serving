@@ -79,7 +79,8 @@ type Config struct {
 //
 // In the case that some target is missing, an error of type TargetError will be returned.
 func BuildTrafficConfiguration(configLister listers.ConfigurationLister, revLister listers.RevisionLister,
-	r *v1.Route) (*Config, error) {
+	r *v1.Route,
+) (*Config, error) {
 	return newBuilder(configLister, revLister, r).build()
 }
 
@@ -118,7 +119,8 @@ func (cfg *Config) computeURL(ctx context.Context, r *v1.Route, tt *RevisionTarg
 }
 
 func (cfg *Config) targetToStatus(ctx context.Context, r *v1.Route, tt *RevisionTarget,
-	revs []RevisionRollout, results []v1.TrafficTarget) (_ []v1.TrafficTarget, err error) {
+	revs []RevisionRollout, results []v1.TrafficTarget,
+) (_ []v1.TrafficTarget, err error) {
 	var url *apis.URL
 	// Do this once per tag.
 	if tt.Tag != "" {
@@ -207,7 +209,8 @@ type configBuilder struct {
 
 func newBuilder(
 	configLister listers.ConfigurationLister, revLister listers.RevisionLister,
-	r *v1.Route) *configBuilder {
+	r *v1.Route,
+) *configBuilder {
 	return &configBuilder{
 		configLister:    configLister.Configurations(r.Namespace),
 		revLister:       revLister.Revisions(r.Namespace),
@@ -359,6 +362,9 @@ func (cb *configBuilder) addConfigurationTarget(tt *v1.TrafficTarget) error {
 	rev, err := cb.getRevision(config.Status.LatestReadyRevisionName)
 	if err != nil {
 		return err
+	}
+	if !rev.IsReady() {
+		return errUnreadyRevision(rev)
 	}
 	ntt := tt.DeepCopy()
 	target := RevisionTarget{

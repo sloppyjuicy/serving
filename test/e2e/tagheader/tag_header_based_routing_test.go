@@ -24,7 +24,7 @@ import (
 	"net/http"
 	"testing"
 
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 	"knative.dev/pkg/ptr"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/pkg/test/spoof"
@@ -112,7 +112,6 @@ func TestTagHeaderBasedRouting(t *testing.T) {
 	}}
 
 	for _, tt := range testCases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -136,7 +135,7 @@ func TestTagHeaderBasedRouting(t *testing.T) {
 func addHeader(header string) pkgTest.RequestOption {
 	return func(req *http.Request) {
 		if len(header) != 0 {
-			req.Header.Add(network.TagHeaderName, header)
+			req.Header.Add(netheader.RouteTagKey, header)
 		}
 	}
 }

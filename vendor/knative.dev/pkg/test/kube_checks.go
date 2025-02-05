@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	k8styped "k8s.io/client-go/kubernetes/typed/core/v1"
+
 	"knative.dev/pkg/test/logging"
 )
 
@@ -52,7 +53,7 @@ func WaitForDeploymentState(ctx context.Context, client kubernetes.Interface, na
 	span := logging.GetEmitableSpan(ctx, fmt.Sprintf("WaitForDeploymentState/%s/%s", name, desc))
 	defer span.End()
 	var lastState *appsv1.Deployment
-	waitErr := wait.PollImmediate(interval, timeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		lastState, err = d.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -77,7 +78,7 @@ func WaitForPodListState(ctx context.Context, client kubernetes.Interface, inSta
 	defer span.End()
 
 	var lastState *corev1.PodList
-	waitErr := wait.PollImmediate(interval, podTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, podTimeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		lastState, err = p.List(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -102,7 +103,7 @@ func WaitForPodState(ctx context.Context, client kubernetes.Interface, inState f
 	defer span.End()
 
 	var lastState *corev1.Pod
-	waitErr := wait.PollImmediate(interval, podTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, podTimeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		lastState, err = p.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -138,9 +139,12 @@ func WaitForServiceEndpoints(ctx context.Context, client kubernetes.Interface, s
 	defer span.End()
 
 	var endpoints *corev1.Endpoints
-	waitErr := wait.PollImmediate(interval, podTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, podTimeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		endpoints, err = endpointsService.Get(ctx, svcName, metav1.GetOptions{})
+		if apierrs.IsNotFound(err) {
+			return false, nil
+		}
 		if err != nil {
 			return false, err
 		}
@@ -182,7 +186,7 @@ func GetEndpointAddresses(ctx context.Context, client kubernetes.Interface, svcN
 // WaitForChangedEndpoints waits until the endpoints for the given service differ from origEndpoints.
 func WaitForChangedEndpoints(ctx context.Context, client kubernetes.Interface, svcName, svcNamespace string, origEndpoints []string) error {
 	var newEndpoints []string
-	waitErr := wait.PollImmediate(1*time.Second, 2*time.Minute, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, 1*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
 		var err error
 		newEndpoints, err = GetEndpointAddresses(ctx, client, svcName, svcNamespace)
 		return !cmp.Equal(origEndpoints, newEndpoints), err
@@ -209,7 +213,7 @@ func DeploymentScaledToZeroFunc() func(d *appsv1.Deployment) (bool, error) {
 // If the content is not present within timeout it returns error.
 func WaitForLogContent(ctx context.Context, client kubernetes.Interface, podName, containerName, namespace, content string) error {
 	var logs []byte
-	waitErr := wait.PollImmediate(interval, logTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, logTimeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		logs, err = PodLogs(ctx, client, podName, containerName, namespace)
 		if err != nil {
@@ -232,7 +236,7 @@ func WaitForAllPodsRunning(ctx context.Context, client kubernetes.Interface, nam
 func WaitForPodRunning(ctx context.Context, client kubernetes.Interface, name string, namespace string) error {
 	var p *corev1.Pod
 	pods := client.CoreV1().Pods(namespace)
-	waitErr := wait.PollImmediate(interval, podTimeout, func() (bool, error) {
+	waitErr := wait.PollUntilContextTimeout(ctx, interval, podTimeout, true, func(ctx context.Context) (bool, error) {
 		var err error
 		p, err = pods.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {

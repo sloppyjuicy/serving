@@ -17,7 +17,7 @@ limitations under the License.
 package args
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/spf13/pflag"
 	"k8s.io/gengo/args"
@@ -29,6 +29,8 @@ type CustomArgs struct {
 	ExternalVersionsInformersPackage string
 	ListersPackage                   string
 	ForceKinds                       string
+	ListerHasPointerElem             bool
+	DisableInformerInit              bool
 }
 
 // NewDefaults returns default arguments for the generator.
@@ -45,6 +47,11 @@ func (ca *CustomArgs) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&ca.ExternalVersionsInformersPackage, "external-versions-informers-package", ca.ExternalVersionsInformersPackage, "the full package name for the external versions injection informer to use")
 	fs.StringVar(&ca.ListersPackage, "listers-package", ca.ListersPackage, "the full package name for client listers to use")
 	fs.StringVar(&ca.ForceKinds, "force-genreconciler-kinds", ca.ForceKinds, `force kinds will override the genreconciler tag setting for the given set of kinds, comma separated: "Foo,Bar,Baz"`)
+
+	fs.BoolVar(&ca.ListerHasPointerElem, "lister-has-pointer-elem", false, "")
+	fs.MarkDeprecated("lister-has-pointer-elem", "this flag has no effect")
+
+	fs.BoolVar(&ca.DisableInformerInit, "disable-informer-init", false, "disable generating the init function for the informer")
 }
 
 // Validate checks the given arguments.
@@ -52,13 +59,13 @@ func Validate(genericArgs *args.GeneratorArgs) error {
 	customArgs := genericArgs.CustomArgs.(*CustomArgs)
 
 	if len(genericArgs.OutputPackagePath) == 0 {
-		return fmt.Errorf("output package cannot be empty")
+		return errors.New("output package cannot be empty")
 	}
 	if len(customArgs.VersionedClientSetPackage) == 0 {
-		return fmt.Errorf("versioned clientset package cannot be empty")
+		return errors.New("versioned clientset package cannot be empty")
 	}
 	if len(customArgs.ExternalVersionsInformersPackage) == 0 {
-		return fmt.Errorf("external versions informers package cannot be empty")
+		return errors.New("external versions informers package cannot be empty")
 	}
 
 	return nil

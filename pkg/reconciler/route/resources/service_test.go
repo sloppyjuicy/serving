@@ -25,9 +25,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	netv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/kmeta"
 	pkgnet "knative.dev/pkg/network"
 	apiConfig "knative.dev/serving/pkg/apis/config"
@@ -54,9 +54,10 @@ var (
 	}
 
 	expectedPorts = []corev1.ServicePort{{
-		Name:       networking.ServicePortNameH2C,
-		Port:       int32(80),
-		TargetPort: intstr.FromInt(80),
+		Name:        netapi.ServicePortNameH2C,
+		AppProtocol: &netapi.AppProtocolH2C,
+		Port:        int32(80),
+		TargetPort:  intstr.FromInt(80),
 	}}
 )
 
@@ -123,8 +124,9 @@ func TestMakeK8SService(t *testing.T) {
 				IP: "some-ip",
 			}},
 			Ports: []corev1.EndpointPort{{
-				Name: networking.ServicePortNameH2C,
-				Port: int32(80),
+				Name:        netapi.ServicePortNameH2C,
+				AppProtocol: &netapi.AppProtocolH2C,
+				Port:        int32(80),
 			}},
 		}},
 	}, {
@@ -174,8 +176,8 @@ func TestMakeK8SService(t *testing.T) {
 		expectedServiceSpec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Ports: []corev1.ServicePort{{
-				Name: networking.ServicePortNameHTTP1,
-				Port: networking.ServiceHTTPPort,
+				Name: netapi.ServicePortNameHTTP1,
+				Port: netapi.ServiceHTTPPort,
 			}},
 		},
 	}, {
@@ -200,8 +202,9 @@ func TestMakeK8SService(t *testing.T) {
 				IP: "some-ip",
 			}},
 			Ports: []corev1.EndpointPort{{
-				Name: networking.ServicePortNameH2C,
-				Port: int32(80),
+				Name:        netapi.ServicePortNameH2C,
+				AppProtocol: &netapi.AppProtocolH2C,
+				Port:        int32(80),
 			}},
 		}},
 	}, {
@@ -352,7 +355,7 @@ func TestMakePlaceholderService(t *testing.T) {
 	}, {
 		name: "cluster local route",
 		route: Route("test-ns", "test-route",
-			WithRouteLabel(map[string]string{network.VisibilityLabelKey: serving.VisibilityClusterLocal})),
+			WithRouteLabel(map[string]string{netapi.VisibilityLabelKey: serving.VisibilityClusterLocal})),
 		expectedExternalName: pkgnet.GetServiceHostname("foo-test-route", "test-ns"),
 		expectedLabels: map[string]string{
 			serving.RouteLabelKey: "test-route",
@@ -392,9 +395,10 @@ func TestMakePlaceholderService(t *testing.T) {
 				ExternalName:    tt.expectedExternalName,
 				SessionAffinity: corev1.ServiceAffinityNone,
 				Ports: []corev1.ServicePort{{
-					Name:       networking.ServicePortNameH2C,
-					Port:       int32(80),
-					TargetPort: intstr.FromInt(80),
+					Name:        netapi.ServicePortNameH2C,
+					AppProtocol: &netapi.AppProtocolH2C,
+					Port:        int32(80),
+					TargetPort:  intstr.FromInt(80),
 				}},
 			}
 
@@ -408,31 +412,35 @@ func TestMakePlaceholderService(t *testing.T) {
 func testConfig() *config.Config {
 	return &config.Config{
 		Domain: &config.Domain{
-			Domains: map[string]*config.LabelSelector{
+			Domains: map[string]config.DomainConfig{
 				"example.com": {},
 				"another-example.com": {
-					Selector: map[string]string{"app": "prod"},
+					Selector: &config.LabelSelector{Selector: map[string]string{"app": "prod"}},
 				},
 			},
 		},
-		Network: &network.Config{
+		Network: &netcfg.Config{
 			DefaultIngressClass: "test-ingress-class",
-			DomainTemplate:      network.DefaultDomainTemplate,
-			TagTemplate:         network.DefaultTagTemplate,
+			DomainTemplate:      netcfg.DefaultDomainTemplate,
+			TagTemplate:         netcfg.DefaultTagTemplate,
+			SystemInternalTLS:   netcfg.EncryptionDisabled,
 		},
 		Features: &apiConfig.Features{
-			MultiContainer:           apiConfig.Disabled,
-			PodSpecAffinity:          apiConfig.Disabled,
-			PodSpecFieldRef:          apiConfig.Disabled,
-			PodSpecDryRun:            apiConfig.Enabled,
-			PodSpecHostAliases:       apiConfig.Disabled,
-			PodSpecNodeSelector:      apiConfig.Disabled,
-			PodSpecTolerations:       apiConfig.Disabled,
-			PodSpecVolumesEmptyDir:   apiConfig.Disabled,
-			PodSpecInitContainers:    apiConfig.Disabled,
-			PodSpecPriorityClassName: apiConfig.Disabled,
-			PodSpecSchedulerName:     apiConfig.Disabled,
-			TagHeaderBasedRouting:    apiConfig.Disabled,
+			MultiContainer:               apiConfig.Disabled,
+			PodSpecAffinity:              apiConfig.Disabled,
+			PodSpecFieldRef:              apiConfig.Disabled,
+			PodSpecDryRun:                apiConfig.Enabled,
+			PodSpecHostAliases:           apiConfig.Disabled,
+			PodSpecNodeSelector:          apiConfig.Disabled,
+			PodSpecTolerations:           apiConfig.Disabled,
+			PodSpecVolumesEmptyDir:       apiConfig.Disabled,
+			PodSpecVolumesHostPath:       apiConfig.Disabled,
+			PodSpecPersistentVolumeClaim: apiConfig.Disabled,
+			PodSpecPersistentVolumeWrite: apiConfig.Disabled,
+			PodSpecInitContainers:        apiConfig.Disabled,
+			PodSpecPriorityClassName:     apiConfig.Disabled,
+			PodSpecSchedulerName:         apiConfig.Disabled,
+			TagHeaderBasedRouting:        apiConfig.Disabled,
 		},
 	}
 }

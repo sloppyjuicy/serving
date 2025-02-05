@@ -20,31 +20,18 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
-	"net"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
-	network "knative.dev/networking/pkg"
-	pkgTest "knative.dev/pkg/test"
-	ingress "knative.dev/pkg/test/ingress"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	"knative.dev/pkg/test/logstream"
-	"knative.dev/pkg/test/spoof"
 	"knative.dev/serving/pkg/apis/autoscaling"
 	"knative.dev/serving/pkg/apis/serving"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
-)
-
-const (
-	targetHostEnv      = "TARGET_HOST"
-	gatewayHostEnv     = "GATEWAY_HOST"
-	helloworldResponse = "Hello World! How about some tasty noodles?"
 )
 
 // testCases for table-driven testing.
@@ -75,94 +62,6 @@ var testInjection = []struct {
 	{"both-enabled", true, true},
 }
 
-func sendRequest(t *testing.T, clients *test.Clients, resolvableDomain bool, url *url.URL) (*spoof.Response, error) {
-	t.Logf("The domain of request is %s.", url.Hostname())
-	client, err := pkgTest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, url.Hostname(), resolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	return client.Do(req)
-}
-
-func testProxyToHelloworld(t *testing.T, clients *test.Clients, helloworldURL *url.URL, inject bool, accessibleExternal bool) {
-	// Create envVars to be used in httpproxy app.
-	envVars := []corev1.EnvVar{{
-		Name:  targetHostEnv,
-		Value: helloworldURL.Hostname(),
-	}}
-
-	// When resolvable domain is not set for external access test, use gateway for the endpoint as services like sslip.io may be flaky.
-	// ref: https://github.com/knative/serving/issues/5389
-	if !test.ServingFlags.ResolvableDomain && accessibleExternal {
-		gatewayTarget, mapper, err := ingress.GetIngressEndpoint(context.Background(), clients.KubeClient, pkgTest.Flags.IngressEndpoint)
-		if err != nil {
-			t.Fatal("Failed to get gateway IP:", err)
-		}
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  gatewayHostEnv,
-			Value: net.JoinHostPort(gatewayTarget, mapper("80")),
-		})
-	}
-
-	// Set up httpproxy app.
-	t.Log("Creating a Service for the httpproxy test app.")
-	names := test.ResourceNames{
-		Service: test.ObjectNameForTest(t),
-		Image:   test.HTTPProxy,
-	}
-
-	test.EnsureTearDown(t, clients, &names)
-
-	resources, err := v1test.CreateServiceReady(t, clients, &names,
-		rtesting.WithEnv(envVars...),
-		rtesting.WithConfigAnnotations(map[string]string{
-			"sidecar.istio.io/inject": strconv.FormatBool(inject),
-		}))
-	if err != nil {
-		t.Fatalf("Failed to create initial Service: %v: %v", names.Service, err)
-	}
-
-	url := resources.Route.Status.URL.URL()
-	if _, err = pkgTest.CheckEndpointState(
-		context.Background(),
-		clients.KubeClient,
-		t.Logf,
-		url,
-		spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(helloworldResponse)),
-		"HTTPProxy",
-		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
-	); err != nil {
-		t.Fatal("Failed to start endpoint of httpproxy:", err)
-	}
-	t.Log("httpproxy is ready.")
-
-	// When we're testing with resolvable domains, we fail earlier trying
-	// to resolve the cluster local domain.
-	if !accessibleExternal && test.ServingFlags.ResolvableDomain {
-		return
-	}
-
-	// As a final check (since we know they are both up), check that if we can
-	// (or cannot) access the helloworld app externally.
-	response, err := sendRequest(t, clients, test.ServingFlags.ResolvableDomain, helloworldURL)
-	if err != nil {
-		t.Fatal("Unexpected error when sending request to helloworld:", err)
-	}
-	expectedStatus := http.StatusNotFound
-	if accessibleExternal {
-		expectedStatus = http.StatusOK
-	}
-	if got, want := response.StatusCode, expectedStatus; got != want {
-		t.Errorf("helloworld response StatusCode = %v, want %v", got, want)
-	}
-}
-
 // In this test, we set up two apps: helloworld and httpproxy.
 // helloworld is a simple app that displays a plaintext string.
 // httpproxy is a proxy that redirects request to internal service of helloworld app
@@ -184,7 +83,7 @@ func TestServiceToServiceCall(t *testing.T) {
 	test.EnsureTearDown(t, clients, &names)
 
 	withInternalVisibility := rtesting.WithServiceLabel(
-		network.VisibilityLabelKey, serving.VisibilityClusterLocal)
+		netapi.VisibilityLabelKey, serving.VisibilityClusterLocal)
 	resources, err := v1test.CreateServiceReady(t, clients, &names, withInternalVisibility)
 	if err != nil {
 		t.Fatalf("Failed to create initial Service: %v: %v", names.Service, err)
@@ -202,6 +101,13 @@ func TestServiceToServiceCall(t *testing.T) {
 	}
 	t.Logf("helloworld internal domain is %s.", resources.Route.Status.URL.Host)
 
+	// if cluster-local-domain-tls is enabled, this will return the CA used to sign the certificates.
+	// TestProxyToHelloworld will use this CA to verify the https connection
+	secret, err := GetCASecret(clients)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// helloworld app and its route are ready. Running the test cases now.
 	for _, tc := range testCases {
 		helloworldURL := &url.URL{
@@ -216,7 +122,7 @@ func TestServiceToServiceCall(t *testing.T) {
 				cancel := logstream.Start(t)
 				defer cancel()
 			}
-			testProxyToHelloworld(t, clients, helloworldURL, true /*inject*/, false /*accessible externally*/)
+			TestProxyToHelloworld(t, clients, helloworldURL, true, false, secret)
 		})
 	}
 }
@@ -230,15 +136,16 @@ func testSvcToSvcCallViaActivator(t *testing.T, clients *test.Clients, injectA b
 	}
 
 	withInternalVisibility := rtesting.WithServiceLabel(
-		network.VisibilityLabelKey, serving.VisibilityClusterLocal)
+		netapi.VisibilityLabelKey, serving.VisibilityClusterLocal)
+
+	withIstioSidecarInject := rtesting.WithServiceLabel("sidecar.istio.io/inject", strconv.FormatBool(injectB))
 
 	test.EnsureTearDown(t, clients, &testNames)
 
 	resources, err := v1test.CreateServiceReady(t, clients, &testNames,
 		rtesting.WithConfigAnnotations(map[string]string{
 			autoscaling.TargetBurstCapacityKey: "-1",
-			"sidecar.istio.io/inject":          strconv.FormatBool(injectB),
-		}), withInternalVisibility)
+		}), withInternalVisibility, withIstioSidecarInject)
 	if err != nil {
 		t.Fatal("Failed to create a service:", err)
 	}
@@ -246,15 +153,21 @@ func testSvcToSvcCallViaActivator(t *testing.T, clients *test.Clients, injectA b
 	// Wait for the activator endpoints to equalize.
 	if err := waitForActivatorEndpoints(&TestContext{
 		t:         t,
-		logf:      t.Logf,
 		resources: resources,
 		clients:   clients,
 	}); err != nil {
 		t.Fatal("Never got Activator endpoints in the service:", err)
 	}
 
+	// if cluster-local-domain-tls is enabled, this will return the CA used to sign the certificates.
+	// TestProxyToHelloworld will use this CA to verify the https connection
+	secret, err := GetCASecret(clients)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// Send request to helloworld app via httpproxy service
-	testProxyToHelloworld(t, clients, resources.Route.Status.URL.URL(), injectA, false /*accessible externally*/)
+	TestProxyToHelloworld(t, clients, resources.Route.Status.URL.URL(), injectA, false, secret)
 }
 
 // Same test as TestServiceToServiceCall but before sending requests
@@ -265,7 +178,6 @@ func TestSvcToSvcViaActivator(t *testing.T) {
 	clients := Setup(t)
 
 	for _, tc := range testInjection {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if !test.ServingFlags.DisableLogStream {
@@ -314,15 +226,21 @@ func TestCallToPublicService(t *testing.T) {
 		{"external_address", resources.Route.Status.URL.URL(), true},
 	}
 
+	// if cluster-local-domain-tls is enabled, this will return the CA used to sign the certificates.
+	// TestProxyToHelloworld will use this CA to verify the https connection
+	secret, err := GetCASecret(clients)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	for _, tc := range gatewayTestCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if !test.ServingFlags.DisableLogStream {
 				cancel := logstream.Start(t)
 				defer cancel()
 			}
-			testProxyToHelloworld(t, clients, tc.url, false /*inject*/, tc.accessibleExternally)
+			TestProxyToHelloworld(t, clients, tc.url, false, tc.accessibleExternally, secret)
 		})
 	}
 }

@@ -17,9 +17,9 @@ limitations under the License.
 package statforwarder
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -53,7 +53,7 @@ var (
 	testHolder1 = "autoscaler-1_" + testIP1
 	testHolder2 = "autoscaler-2_" + testIP2
 	testNs      = system.Namespace()
-	testBs      = hash.NewBucketSet(sets.NewString(bucket1))
+	testBs      = hash.NewBucketSet(sets.New(bucket1))
 	testLease   = &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bucket1,
@@ -98,10 +98,10 @@ func TestForwarderReconcile(t *testing.T) {
 		t.Fatal("Failed to start informers:", err)
 	}
 
-	os.Setenv("POD_IP", testIP1)
+	t.Setenv("POD_IP", testIP1)
 	f1 := New(ctx, testBs)
 	must(t, LeaseBasedProcessor(ctx, f1, noOp))
-	os.Setenv("POD_IP", testIP2)
+	t.Setenv("POD_IP", testIP2)
 	f2 := New(ctx, testBs)
 	must(t, LeaseBasedProcessor(ctx, f2, noOp))
 
@@ -117,7 +117,7 @@ func TestForwarderReconcile(t *testing.T) {
 
 	var lastErr error
 	// Wait for the resources to be created.
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 		_, lastErr = service.Lister().Services(testNs).Get(bucket1)
 		return lastErr == nil, nil
 	}); err != nil {
@@ -132,16 +132,16 @@ func TestForwarderReconcile(t *testing.T) {
 			Name:     autoscalerPortName,
 			Port:     autoscalerPort,
 			Protocol: corev1.ProtocolTCP,
-		}}},
-	}
+		}},
+	}}
 
 	// Check the endpoints got updated.
 	el := endpoints.Lister().Endpoints(testNs)
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
 		got, err := el.Get(bucket1)
 		if err != nil {
 			lastErr = err
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		if !cmp.Equal(wantSubsets, got.Subsets) {
@@ -161,12 +161,12 @@ func TestForwarderReconcile(t *testing.T) {
 
 	// Check that the endpoints got updated.
 	wantSubsets[0].Addresses[0].IP = testIP2
-	if err := wait.PollImmediate(10*time.Millisecond, 10*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
 		// Check the endpoints get updated.
 		got, err := el.Get(bucket1)
 		if err != nil {
 			lastErr = err
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		if !cmp.Equal(wantSubsets, got.Subsets) {
@@ -194,7 +194,7 @@ func TestForwarderRetryOnSvcCreationFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	os.Setenv("POD_IP", testIP1)
+	t.Setenv("POD_IP", testIP1)
 	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	svcCreation := 0
@@ -235,7 +235,7 @@ func TestForwarderRetryOnEndpointsCreationFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	os.Setenv("POD_IP", testIP1)
+	t.Setenv("POD_IP", testIP1)
 	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	endpointsCreation := 0
@@ -277,7 +277,7 @@ func TestForwarderRetryOnEndpointsUpdateFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	os.Setenv("POD_IP", testIP1)
+	t.Setenv("POD_IP", testIP1)
 	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	endpointsUpdate := 0
@@ -326,7 +326,7 @@ func TestForwarderSkipReconciling(t *testing.T) {
 		waitInformers()
 	}()
 
-	os.Setenv("POD_IP", testIP1)
+	t.Setenv("POD_IP", testIP1)
 	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	svcCreated := make(chan struct{})
@@ -421,8 +421,8 @@ func TestProcess(t *testing.T) {
 		acceptCount++
 		acceptCh <- acceptCount
 	}
-	os.Setenv("POD_IP", testIP1)
-	f := New(ctx, hash.NewBucketSet(sets.NewString(bucket1, bucket2)))
+	t.Setenv("POD_IP", testIP1)
+	f := New(ctx, hash.NewBucketSet(sets.New(bucket1, bucket2)))
 	must(t, LeaseBasedProcessor(ctx, f, accept))
 
 	// A Forward without any leadership information should process with retry.
@@ -445,7 +445,7 @@ func TestProcess(t *testing.T) {
 	kubeClient.CoordinationV1().Leases(testNs).Create(ctx, anotherLease, metav1.CreateOptions{})
 	lease.Informer().GetIndexer().Add(anotherLease)
 
-	if err := wait.PollImmediate(10*time.Millisecond, 10*time.Second, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
 		_, p1owned := f.getProcessor(bucket1).(*localProcessor)
 		_, p2notowned := f.getProcessor(bucket2).(*remoteProcessor)
 		return p1owned && p2notowned, nil

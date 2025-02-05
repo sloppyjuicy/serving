@@ -21,12 +21,15 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"knative.dev/networking/pkg/apis/networking/v1alpha1"
 
 	"github.com/google/go-cmp/cmp"
 	"knative.dev/pkg/apis"
 	pkgnet "knative.dev/pkg/network"
 
-	network "knative.dev/networking/pkg"
+	netapi "knative.dev/networking/pkg/apis/networking"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/pkg/reconciler/route/config"
@@ -35,16 +38,16 @@ import (
 func testConfig() *config.Config {
 	return &config.Config{
 		Domain: &config.Domain{
-			Domains: map[string]*config.LabelSelector{
+			Domains: map[string]config.DomainConfig{
 				"example.com": {},
 				"another-example.com": {
-					Selector: map[string]string{"app": "prod"},
+					Selector: &config.LabelSelector{Selector: map[string]string{"app": "prod"}},
 				},
 			},
 		},
-		Network: &network.Config{
+		Network: &netcfg.Config{
 			DefaultIngressClass: "ingress-class-foo",
-			DomainTemplate:      network.DefaultDomainTemplate,
+			DomainTemplate:      netcfg.DefaultDomainTemplate,
 		},
 	}
 }
@@ -138,9 +141,9 @@ func TestDomainNameFromTemplate(t *testing.T) {
 			ctx = config.ToContext(ctx, cfg)
 
 			if tt.local {
-				meta.Labels[network.VisibilityLabelKey] = serving.VisibilityClusterLocal
+				meta.Labels[netapi.VisibilityLabelKey] = serving.VisibilityClusterLocal
 			} else {
-				delete(meta.Labels, network.VisibilityLabelKey)
+				delete(meta.Labels, netapi.VisibilityLabelKey)
 			}
 
 			got, err := DomainNameFromTemplate(ctx, meta, tt.args.name)
@@ -270,6 +273,128 @@ func TestGetAllDomainsAndTags(t *testing.T) {
 		})
 	}
 }
+
+func TestGetDomainsForVisibility(t *testing.T) {
+	tests := []struct {
+		name           string
+		tag            string
+		visibility     v1alpha1.IngressVisibility
+		domainTemplate string
+		tagTemplate    string
+		want           sets.Set[string]
+	}{
+		{
+			name:           "default template - no tag - cluster-local",
+			tag:            "",
+			visibility:     v1alpha1.IngressVisibilityClusterLocal,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Name}}-{{.Tag}}",
+			want: sets.New(
+				"myroute.default",
+				"myroute.default.svc",
+				"myroute.default.svc.cluster.local",
+			),
+		}, {
+			name:           "default template - no tag - external-IP",
+			tag:            "",
+			visibility:     v1alpha1.IngressVisibilityExternalIP,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Name}}-{{.Tag}}",
+			want: sets.New(
+				"myroute.default.example.com",
+			),
+		}, {
+			name:           "default template - with tag - cluster-local",
+			tag:            "test",
+			visibility:     v1alpha1.IngressVisibilityClusterLocal,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Name}}-{{.Tag}}",
+			want: sets.New(
+				"myroute-test.default",
+				"myroute-test.default.svc",
+				"myroute-test.default.svc.cluster.local",
+			),
+		}, {
+			name:           "default template - with tag - external-IP",
+			tag:            "test",
+			visibility:     v1alpha1.IngressVisibilityExternalIP,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Name}}-{{.Tag}}",
+			want: sets.New(
+				"myroute-test.default.example.com",
+			),
+		}, {
+			name:           "alternative template - no tag - cluster-local",
+			tag:            "",
+			visibility:     v1alpha1.IngressVisibilityClusterLocal,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Tag}}-{{.Name}}",
+			want: sets.New(
+				"myroute.default",
+				"myroute.default.svc",
+				"myroute.default.svc.cluster.local",
+			),
+		}, {
+			name:           "alternative template - no tag - external-IP",
+			tag:            "",
+			visibility:     v1alpha1.IngressVisibilityExternalIP,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Tag}}-{{.Name}}",
+			want: sets.New(
+				"myroute.default.example.com",
+			),
+		}, {
+			name:           "alternative template - with tag - cluster-local",
+			tag:            "test",
+			visibility:     v1alpha1.IngressVisibilityClusterLocal,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Tag}}-{{.Name}}",
+			want: sets.New(
+				"test-myroute.default",
+				"test-myroute.default.svc",
+				"test-myroute.default.svc.cluster.local",
+			),
+		}, {
+			name:           "alternative template - with tag - external-IP",
+			tag:            "test",
+			visibility:     v1alpha1.IngressVisibilityExternalIP,
+			domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+			tagTemplate:    "{{.Tag}}-{{.Name}}",
+			want: sets.New(
+				"test-myroute.default.example.com",
+			),
+		},
+	}
+
+	route := &v1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myroute",
+			Namespace: "default",
+			Labels: map[string]string{
+				"route": "myapp",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			cfg := testConfig()
+			cfg.Network.DomainTemplate = tt.domainTemplate
+			cfg.Network.TagTemplate = tt.tagTemplate
+			ctx = config.ToContext(ctx, cfg)
+
+			got, err := GetDomainsForVisibility(ctx, tt.tag, route, tt.visibility)
+			if err != nil {
+				t.Errorf("failed calling GetDomainsForVisibility: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Error("GetDomainsForVisibility() diff (-want +got):", diff)
+			}
+		})
+	}
+}
+
 func TestIsClusterLocal(t *testing.T) {
 	tests := []struct {
 		name   string

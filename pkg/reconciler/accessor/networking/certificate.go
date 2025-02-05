@@ -40,8 +40,8 @@ type CertificateAccessor interface {
 
 // ReconcileCertificate reconciles Certificate to the desired status.
 func ReconcileCertificate(ctx context.Context, owner kmeta.Accessor, desired *v1alpha1.Certificate,
-	certAccessor CertificateAccessor) (*v1alpha1.Certificate, error) {
-
+	certAccessor CertificateAccessor,
+) (*v1alpha1.Certificate, error) {
 	recorder := controller.GetEventRecorder(ctx)
 	if recorder == nil {
 		return nil, fmt.Errorf("recorder for reconciling Certificate %s/%s is not created", desired.Namespace, desired.Name)
@@ -63,10 +63,14 @@ func ReconcileCertificate(ctx context.Context, owner kmeta.Accessor, desired *v1
 		return nil, kaccessor.NewAccessorError(
 			fmt.Errorf("owner: %s with Type %T does not own Certificate: %q", owner.GetName(), owner, cert.Name),
 			kaccessor.NotOwnResource)
-	} else if !equality.Semantic.DeepEqual(cert.Spec, desired.Spec) {
+	} else if !equality.Semantic.DeepEqual(cert.Spec, desired.Spec) ||
+		!equality.Semantic.DeepEqual(cert.Annotations, desired.Annotations) ||
+		!equality.Semantic.DeepEqual(cert.Labels, desired.Labels) {
 		// Don't modify the informers copy
 		existing := cert.DeepCopy()
 		existing.Spec = desired.Spec
+		existing.Annotations = desired.Annotations
+		existing.Labels = desired.Labels
 		cert, err = certAccessor.GetNetworkingClient().NetworkingV1alpha1().Certificates(existing.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 		if err != nil {
 			recorder.Eventf(owner, corev1.EventTypeWarning, "UpdateFailed",

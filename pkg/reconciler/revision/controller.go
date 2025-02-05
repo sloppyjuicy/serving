@@ -26,6 +26,9 @@ import (
 	"golang.org/x/time/rate"
 	cachingclient "knative.dev/caching/pkg/client/injection/client"
 	imageinformer "knative.dev/caching/pkg/client/injection/informers/caching/v1alpha1/image"
+	"knative.dev/networking/pkg/apis/networking/v1alpha1"
+	networkingclient "knative.dev/networking/pkg/client/injection/client"
+	certificateinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate"
 	"knative.dev/pkg/changeset"
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	deploymentinformer "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment"
@@ -36,7 +39,7 @@ import (
 
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	network "knative.dev/networking/pkg"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
@@ -73,20 +76,23 @@ func newControllerWithOptions(
 	deploymentInformer := deploymentinformer.Get(ctx)
 	imageInformer := imageinformer.Get(ctx)
 	paInformer := painformer.Get(ctx)
+	certificateInformer := certificateinformer.Get(ctx)
 
 	c := &Reconciler{
-		kubeclient:    kubeclient.Get(ctx),
-		client:        servingclient.Get(ctx),
-		cachingclient: cachingclient.Get(ctx),
+		kubeclient:       kubeclient.Get(ctx),
+		client:           servingclient.Get(ctx),
+		networkingclient: networkingclient.Get(ctx),
+		cachingclient:    cachingclient.Get(ctx),
 
 		podAutoscalerLister: paInformer.Lister(),
 		imageLister:         imageInformer.Lister(),
 		deploymentLister:    deploymentInformer.Lister(),
+		certificateLister:   certificateInformer.Lister(),
 	}
 
 	impl := revisionreconciler.NewImpl(ctx, c, func(impl *controller.Impl) controller.Options {
 		configsToResync := []interface{}{
-			&network.Config{},
+			&netcfg.Config{},
 			&metrics.ObservabilityConfig{},
 			&deployment.Config{},
 			&apisconfig.Defaults{},
@@ -103,6 +109,8 @@ func newControllerWithOptions(
 		return controller.Options{ConfigStore: configStore}
 	})
 
+	c.tracker = impl.Tracker
+
 	transport := http.DefaultTransport
 	if rt, err := newResolverTransport(k8sCertPath, digestResolutionWorkers, digestResolutionWorkers); err != nil {
 		logging.FromContext(ctx).Errorw("Failed to create resolver transport", zap.Error(err))
@@ -110,18 +118,13 @@ func newControllerWithOptions(
 		transport = rt
 	}
 
-	userAgent := "knative (serving)"
-	if commitID, err := changeset.Get(); err == nil {
-		userAgent = fmt.Sprintf("knative/%s (serving)", commitID)
-	} else {
-		logger.Info("Fetch GitHub commit ID from kodata failed", zap.Error(err))
-	}
+	userAgent := fmt.Sprintf("knative/%s (serving)", changeset.Get())
 
-	digestResolveQueue := workqueue.NewNamedRateLimitingQueue(workqueue.NewMaxOfRateLimiter(
-		workqueue.NewItemExponentialFailureRateLimiter(1*time.Second, 1000*time.Second),
+	digestResolveQueue := workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.NewTypedMaxOfRateLimiter(
+		newItemExponentialFailureRateLimiter(1*time.Second, 1000*time.Second),
 		// 10 qps, 100 bucket size.  This is only for retry speed and its only the overall factor (not per item)
-		&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
-	), "digests")
+		&workqueue.TypedBucketRateLimiter[any]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+	), workqueue.TypedRateLimitingQueueConfig[any]{Name: "digests"})
 
 	resolver := newBackgroundResolver(logger, &digestResolver{client: kubeclient.Get(ctx), transport: transport, userAgent: userAgent}, digestResolveQueue, impl.EnqueueKey)
 	resolver.Start(ctx.Done(), digestResolutionWorkers)
@@ -136,6 +139,15 @@ func newControllerWithOptions(
 	}
 	deploymentInformer.Informer().AddEventHandler(handleMatchingControllers)
 	paInformer.Informer().AddEventHandler(handleMatchingControllers)
+	certificateInformer.Informer().AddEventHandler(controller.HandleAll(
+		// Call the tracker's OnChanged method, but we've seen the objects
+		// coming through this path missing TypeMeta, so ensure it is properly
+		// populated.
+		controller.EnsureTypeMeta(
+			c.tracker.OnChanged,
+			v1alpha1.SchemeGroupVersion.WithKind("Certificate"),
+		),
+	))
 
 	// We don't watch for changes to Image because we don't incorporate any of its
 	// properties into our own status and should work completely in the absence of

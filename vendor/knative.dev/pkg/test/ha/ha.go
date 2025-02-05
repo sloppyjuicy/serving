@@ -57,7 +57,8 @@ func GetLeaders(ctx context.Context, t *testing.T, client kubernetes.Interface, 
 	}
 	ret := make([]string, 0, len(leases.Items))
 	for _, lease := range leases.Items {
-		if lease.Spec.HolderIdentity == nil {
+		if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity == "" {
+			t.Logf("GetLeaders[%s] skipping lease %s as it has no holder", deploymentName, lease.Name)
 			continue
 		}
 		pod := strings.SplitN(*lease.Spec.HolderIdentity, "_", 2)[0]
@@ -66,6 +67,7 @@ func GetLeaders(ctx context.Context, t *testing.T, client kubernetes.Interface, 
 		if extractDeployment(pod) != deploymentName {
 			continue
 		}
+		t.Logf("GetLeaders[%s] adding lease %s for pod %s", deploymentName, lease.Name, pod)
 		ret = append(ret, pod)
 	}
 	return ret, nil
@@ -73,12 +75,12 @@ func GetLeaders(ctx context.Context, t *testing.T, client kubernetes.Interface, 
 
 // WaitForNewLeaders waits until the collection of current leaders consists of "n" leaders
 // which do not include the specified prior leaders.
-func WaitForNewLeaders(ctx context.Context, t *testing.T, client kubernetes.Interface, deploymentName, namespace string, previousLeaders sets.String, n int) (sets.String, error) {
+func WaitForNewLeaders(ctx context.Context, t *testing.T, client kubernetes.Interface, deploymentName, namespace string, previousLeaders sets.Set[string], n int) (sets.Set[string], error) {
 	span := logging.GetEmitableSpan(ctx, "WaitForNewLeaders/"+deploymentName)
 	defer span.End()
 
-	var leaders sets.String
-	err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+	var leaders sets.Set[string]
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
 		currLeaders, err := GetLeaders(ctx, t, client, deploymentName, namespace)
 		if err != nil {
 			return false, err
@@ -87,7 +89,7 @@ func WaitForNewLeaders(ctx context.Context, t *testing.T, client kubernetes.Inte
 			t.Logf("WaitForNewLeaders[%s] not enough leaders, got: %d, want: %d", deploymentName, len(currLeaders), n)
 			return false, nil
 		}
-		l := sets.NewString(currLeaders...)
+		l := sets.New[string](currLeaders...)
 		if previousLeaders.HasAny(currLeaders...) {
 			t.Logf("WaitForNewLeaders[%s] still see intersection: %v", deploymentName, previousLeaders.Intersection(l))
 			return false, nil
@@ -105,7 +107,7 @@ func WaitForNewLeader(ctx context.Context, client kubernetes.Interface, lease, n
 	span := logging.GetEmitableSpan(ctx, "WaitForNewLeader/"+lease)
 	defer span.End()
 	var leader string
-	err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
 		lease, err := client.CoordinationV1().Leases(namespace).Get(ctx, lease, metav1.GetOptions{})
 		if err != nil {
 			return false, fmt.Errorf("error getting lease %s: %w", lease, err)

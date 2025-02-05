@@ -18,13 +18,12 @@ package handler
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	netheader "knative.dev/networking/pkg/http/header"
 	ktesting "knative.dev/pkg/logging/testing"
-	"knative.dev/pkg/network"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -37,17 +36,17 @@ func TestHealthHandler(t *testing.T) {
 		check          func() error
 	}{{
 		name:           "forward non-kubelet request",
-		headers:        http.Header{network.UserAgentKey: []string{"chromium/734.6.5"}},
+		headers:        http.Header{netheader.UserAgentKey: []string{"chromium/734.6.5"}},
 		passed:         true,
 		expectedStatus: http.StatusOK,
 	}, {
 		name:           "kubelet probe success",
-		headers:        http.Header{network.UserAgentKey: []string{"kube-probe/something"}},
+		headers:        http.Header{netheader.UserAgentKey: []string{"kube-probe/something"}},
 		expectedStatus: http.StatusOK,
 		check:          func() error { return nil },
 	}, {
 		name:           "kubelet probe failure",
-		headers:        http.Header{network.UserAgentKey: []string{"kube-probe/something"}},
+		headers:        http.Header{netheader.UserAgentKey: []string{"kube-probe/something"}},
 		expectedStatus: http.StatusInternalServerError,
 		check:          func() error { return errors.New("not ready") },
 	}}
@@ -89,15 +88,15 @@ func BenchmarkHealthHandler(b *testing.B) {
 		check   func() error
 	}{{
 		label:   "forward non-kubelet request",
-		headers: http.Header{network.UserAgentKey: []string{"chromium/734.6.5"}},
+		headers: http.Header{netheader.UserAgentKey: []string{"chromium/734.6.5"}},
 		check:   func() error { return nil },
 	}, {
 		label:   "kubelet probe success",
-		headers: http.Header{network.UserAgentKey: []string{"kube-probe/something"}},
+		headers: http.Header{netheader.UserAgentKey: []string{"kube-probe/something"}},
 		check:   func() error { return nil },
 	}, {
 		label:   "kubelet probe failure",
-		headers: http.Header{network.UserAgentKey: []string{"kube-probe/something"}},
+		headers: http.Header{netheader.UserAgentKey: []string{"kube-probe/something"}},
 		check:   func() error { return errors.New("not ready") },
 	}}
 
@@ -107,14 +106,14 @@ func BenchmarkHealthHandler(b *testing.B) {
 	for _, test := range tests {
 		handler := HealthHandler{HealthCheck: test.check, NextHandler: baseHandler, Logger: logger}
 		req.Header = test.headers
-		b.Run(fmt.Sprintf("%s-sequential", test.label), func(b *testing.B) {
+		b.Run(test.label+"-sequential", func(b *testing.B) {
 			resp := httptest.NewRecorder()
-			for j := 0; j < b.N; j++ {
+			for range b.N {
 				handler.ServeHTTP(resp, req)
 			}
 		})
 
-		b.Run(fmt.Sprintf("%s-parallel", test.label), func(b *testing.B) {
+		b.Run(test.label+"-parallel", func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				resp := httptest.NewRecorder()
 				for pb.Next() {

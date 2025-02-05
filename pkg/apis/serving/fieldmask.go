@@ -33,17 +33,12 @@ func VolumeMask(ctx context.Context, in *corev1.Volume) *corev1.Volume {
 	if in == nil {
 		return nil
 	}
-	cfg := config.FromContextOrDefaults(ctx)
 
 	out := new(corev1.Volume)
 
 	// Allowed fields
 	out.Name = in.Name
 	out.VolumeSource = in.VolumeSource
-
-	if cfg.Features.PodSpecVolumesEmptyDir != config.Disabled {
-		out.EmptyDir = in.EmptyDir
-	}
 
 	return out
 }
@@ -67,6 +62,14 @@ func VolumeSourceMask(ctx context.Context, in *corev1.VolumeSource) *corev1.Volu
 		out.EmptyDir = in.EmptyDir
 	}
 
+	if cfg.Features.PodSpecPersistentVolumeClaim != config.Disabled {
+		out.PersistentVolumeClaim = in.PersistentVolumeClaim
+	}
+
+	if cfg.Features.PodSpecVolumesHostPath != config.Disabled {
+		out.HostPath = in.HostPath
+	}
+
 	// Too many disallowed fields to list
 
 	return out
@@ -87,9 +90,8 @@ func VolumeProjectionMask(in *corev1.VolumeProjection) *corev1.VolumeProjection 
 	out.ConfigMap = in.ConfigMap
 	out.ServiceAccountToken = in.ServiceAccountToken
 
-	// Disallowed fields
-	// This list is unnecessary, but added here for clarity
-	out.DownwardAPI = nil
+	// TODO(KauzClay): Should this be behind a feature flag like EmptyDir?
+	out.DownwardAPI = in.DownwardAPI
 
 	return out
 }
@@ -148,6 +150,40 @@ func ServiceAccountTokenProjectionMask(in *corev1.ServiceAccountTokenProjection)
 	return out
 }
 
+// DownwardAPIProjectionMask performs a _shallow_ copy of the Kubernetes DownwardAPIProjection
+// object to a new Kubernetes DownwardAPIProjection object bringing over only the fields allowed
+// in the Knative API. This does not validate the contents or the bounds of the provided fields.
+func DownwardAPIProjectionMask(in *corev1.DownwardAPIProjection) *corev1.DownwardAPIProjection {
+	if in == nil {
+		return nil
+	}
+
+	out := new(corev1.DownwardAPIProjection)
+
+	out.Items = append(out.Items, in.Items...)
+
+	return out
+}
+
+// DownwardAPIVolumeFileMask performs a _shallow_ copy of the Kubernetes DownwardAPIVolumeFileMask
+// object to a new Kubernetes DownwardAPIVolumeFileMask object bringing over only the fields allowed
+// in the Knative API. This does not validate the contents or the bounds of the provided fields.
+func DownwardAPIVolumeFileMask(in *corev1.DownwardAPIVolumeFile) *corev1.DownwardAPIVolumeFile {
+	if in == nil {
+		return nil
+	}
+
+	out := new(corev1.DownwardAPIVolumeFile)
+
+	// Allowed fields
+	out.FieldRef = in.FieldRef
+	out.ResourceFieldRef = in.ResourceFieldRef
+	out.Path = in.Path
+	out.Mode = in.Mode
+
+	return out
+}
+
 // KeyToPathMask performs a _shallow_ copy of the Kubernetes KeyToPath
 // object to a new Kubernetes KeyToPath object bringing over only the fields allowed
 // in the Knative API. This does not validate the contents or the bounds of the provided fields.
@@ -192,6 +228,9 @@ func PodSpecMask(ctx context.Context, in *corev1.PodSpec) *corev1.PodSpec {
 	if cfg.Features.PodSpecAffinity != config.Disabled {
 		out.Affinity = in.Affinity
 	}
+	if cfg.Features.PodSpecTopologySpreadConstraints != config.Disabled {
+		out.TopologySpreadConstraints = in.TopologySpreadConstraints
+	}
 	if cfg.Features.PodSpecHostAliases != config.Disabled {
 		out.HostAliases = in.HostAliases
 	}
@@ -206,6 +245,12 @@ func PodSpecMask(ctx context.Context, in *corev1.PodSpec) *corev1.PodSpec {
 	}
 	if cfg.Features.PodSpecSecurityContext != config.Disabled {
 		out.SecurityContext = in.SecurityContext
+	} else if cfg.Features.SecurePodDefaults != config.Disabled {
+		// This is further validated in ValidatePodSecurityContext.
+		out.SecurityContext = in.SecurityContext
+	}
+	if cfg.Features.PodSpecShareProcessNamespace != config.Disabled {
+		out.ShareProcessNamespace = in.ShareProcessNamespace
 	}
 	if cfg.Features.PodSpecPriorityClassName != config.Disabled {
 		out.PriorityClassName = in.PriorityClassName
@@ -216,22 +261,30 @@ func PodSpecMask(ctx context.Context, in *corev1.PodSpec) *corev1.PodSpec {
 	if cfg.Features.PodSpecInitContainers != config.Disabled {
 		out.InitContainers = in.InitContainers
 	}
-
+	if cfg.Features.PodSpecDNSPolicy != config.Disabled {
+		out.DNSPolicy = in.DNSPolicy
+	}
+	if cfg.Features.PodSpecDNSConfig != config.Disabled {
+		out.DNSConfig = in.DNSConfig
+	}
+	if cfg.Features.PodSpecHostIPC != config.Disabled {
+		out.HostIPC = in.HostIPC
+	}
+	if cfg.Features.PodSpecHostPID != config.Disabled {
+		out.HostPID = in.HostPID
+	}
+	if cfg.Features.PodSpecHostNetwork != config.Disabled {
+		out.HostNetwork = in.HostNetwork
+	}
 	// Disallowed fields
 	// This list is unnecessary, but added here for clarity
 	out.RestartPolicy = ""
 	out.TerminationGracePeriodSeconds = nil
 	out.ActiveDeadlineSeconds = nil
-	out.DNSPolicy = ""
 	out.NodeName = ""
-	out.HostNetwork = false
-	out.HostPID = false
-	out.HostIPC = false
-	out.ShareProcessNamespace = nil
 	out.Hostname = ""
 	out.Subdomain = ""
 	out.Priority = nil
-	out.DNSConfig = nil
 	out.ReadinessGates = nil
 
 	return out
@@ -261,6 +314,7 @@ func ContainerMask(in *corev1.Container) *corev1.Container {
 	out.ReadinessProbe = in.ReadinessProbe
 	out.Resources = in.Resources
 	out.SecurityContext = in.SecurityContext
+	out.StartupProbe = in.StartupProbe
 	out.TerminationMessagePath = in.TerminationMessagePath
 	out.TerminationMessagePolicy = in.TerminationMessagePolicy
 	out.VolumeMounts = in.VolumeMounts
@@ -309,7 +363,7 @@ func ProbeMask(in *corev1.Probe) *corev1.Probe {
 	out := new(corev1.Probe)
 
 	// Allowed fields
-	out.Handler = in.Handler
+	out.ProbeHandler = in.ProbeHandler
 	out.InitialDelaySeconds = in.InitialDelaySeconds
 	out.TimeoutSeconds = in.TimeoutSeconds
 	out.PeriodSeconds = in.PeriodSeconds
@@ -322,19 +376,19 @@ func ProbeMask(in *corev1.Probe) *corev1.Probe {
 // HandlerMask performs a _shallow_ copy of the Kubernetes Handler object to a new
 // Kubernetes Handler object bringing over only the fields allowed in the Knative API. This
 // does not validate the contents or the bounds of the provided fields.
-func HandlerMask(in *corev1.Handler) *corev1.Handler {
+func HandlerMask(in *corev1.ProbeHandler) *corev1.ProbeHandler {
 	if in == nil {
 		return nil
 	}
-	out := new(corev1.Handler)
+	out := new(corev1.ProbeHandler)
 
 	// Allowed fields
 	out.Exec = in.Exec
 	out.HTTPGet = in.HTTPGet
 	out.TCPSocket = in.TCPSocket
+	out.GRPC = in.GRPC
 
 	return out
-
 }
 
 // ExecActionMask performs a _shallow_ copy of the Kubernetes ExecAction object to a new
@@ -387,6 +441,22 @@ func TCPSocketActionMask(in *corev1.TCPSocketAction) *corev1.TCPSocketAction {
 	return out
 }
 
+// GRPCActionMask performs a _shallow_ copy of the Kubernetes GRPCAction object to a new
+// Kubernetes GRPCAction object bringing over only the fields allowed in the Knative API. This
+// does not validate the contents or the bounds of the provided fields.
+func GRPCActionMask(in *corev1.GRPCAction) *corev1.GRPCAction {
+	if in == nil {
+		return nil
+	}
+	out := new(corev1.GRPCAction)
+
+	// Allowed fields
+	out.Port = in.Port
+	out.Service = in.Service
+
+	return out
+}
+
 // ContainerPortMask performs a _shallow_ copy of the Kubernetes ContainerPort object to a new
 // Kubernetes ContainerPort object bringing over only the fields allowed in the Knative API. This
 // does not validate the contents or the bounds of the provided fields.
@@ -402,7 +472,7 @@ func ContainerPortMask(in *corev1.ContainerPort) *corev1.ContainerPort {
 	out.Name = in.Name
 	out.Protocol = in.Protocol
 
-	//Disallowed fields
+	// Disallowed fields
 	// This list is unnecessary, but added here for clarity
 	out.HostIP = ""
 	out.HostPort = 0
@@ -481,7 +551,6 @@ func ConfigMapKeySelectorMask(in *corev1.ConfigMapKeySelector) *corev1.ConfigMap
 	out.LocalObjectReference = in.LocalObjectReference
 
 	return out
-
 }
 
 // SecretKeySelectorMask performs a _shallow_ copy of the Kubernetes SecretKeySelector object to a new
@@ -500,7 +569,6 @@ func SecretKeySelectorMask(in *corev1.SecretKeySelector) *corev1.SecretKeySelect
 	out.LocalObjectReference = in.LocalObjectReference
 
 	return out
-
 }
 
 // ConfigMapEnvSourceMask performs a _shallow_ copy of the Kubernetes ConfigMapEnvSource object to a new
@@ -518,7 +586,6 @@ func ConfigMapEnvSourceMask(in *corev1.ConfigMapEnvSource) *corev1.ConfigMapEnvS
 	out.LocalObjectReference = in.LocalObjectReference
 
 	return out
-
 }
 
 // SecretEnvSourceMask performs a _shallow_ copy of the Kubernetes SecretEnvSource object to a new
@@ -536,7 +603,6 @@ func SecretEnvSourceMask(in *corev1.SecretEnvSource) *corev1.SecretEnvSource {
 	out.LocalObjectReference = in.LocalObjectReference
 
 	return out
-
 }
 
 // EnvFromSourceMask performs a _shallow_ copy of the Kubernetes EnvFromSource object to a new
@@ -572,7 +638,6 @@ func ResourceRequirementsMask(in *corev1.ResourceRequirements) *corev1.ResourceR
 	out.Requests = in.Requests
 
 	return out
-
 }
 
 // PodSecurityContextMask performs a _shallow_ copy of the Kubernetes PodSecurityContext object into a new
@@ -585,6 +650,19 @@ func PodSecurityContextMask(ctx context.Context, in *corev1.PodSecurityContext) 
 
 	out := new(corev1.PodSecurityContext)
 
+	if config.FromContextOrDefaults(ctx).Features.SecurePodDefaults == config.Enabled {
+		// Allow to opt out of more-secure defaults if SecurePodDefaults is enabled.
+		// This aligns with defaultSecurityContext in revision_defaults.go.
+		if in.SeccompProfile != nil {
+			seccomp := in.SeccompProfile.Type
+			if seccomp == corev1.SeccompProfileTypeRuntimeDefault || seccomp == corev1.SeccompProfileTypeUnconfined {
+				out.SeccompProfile = &corev1.SeccompProfile{
+					Type: seccomp,
+				}
+			}
+		}
+	}
+
 	if config.FromContextOrDefaults(ctx).Features.PodSpecSecurityContext == config.Disabled {
 		return out
 	}
@@ -594,12 +672,14 @@ func PodSecurityContextMask(ctx context.Context, in *corev1.PodSecurityContext) 
 	out.RunAsNonRoot = in.RunAsNonRoot
 	out.FSGroup = in.FSGroup
 	out.SupplementalGroups = in.SupplementalGroups
+	out.SeccompProfile = in.SeccompProfile
 
 	// Disallowed
 	// This list is unnecessary, but added here for clarity
 	out.SELinuxOptions = nil
 	out.WindowsOptions = nil
 	out.Sysctls = nil
+	out.FSGroupChangePolicy = nil
 
 	return out
 }
@@ -622,12 +702,19 @@ func SecurityContextMask(ctx context.Context, in *corev1.SecurityContext) *corev
 	// RunAsNonRoot when unset behaves the same way as false
 	// We do want the ability for folks to set this value to true
 	out.RunAsNonRoot = in.RunAsNonRoot
-
+	// AllowPrivilegeEscalation when unset can behave the same way as true
+	// We do want the ability for folks to set this value to false
+	out.AllowPrivilegeEscalation = in.AllowPrivilegeEscalation
+	// SeccompProfile defaults to "unconstrained", but the safe values are
+	// "RuntimeDefault" or "Localhost" (with localhost path set)
+	out.SeccompProfile = in.SeccompProfile
+	// Only allow setting Privileged to false
+	if in.Privileged != nil && !*in.Privileged {
+		out.Privileged = in.Privileged
+	}
 	// Disallowed
 	// This list is unnecessary, but added here for clarity
-	out.Privileged = nil
 	out.SELinuxOptions = nil
-	out.AllowPrivilegeEscalation = nil
 	out.ProcMount = nil
 
 	return out
@@ -646,8 +733,14 @@ func CapabilitiesMask(ctx context.Context, in *corev1.Capabilities) *corev1.Capa
 	// Allowed fields
 	out.Drop = in.Drop
 
-	if config.FromContextOrDefaults(ctx).Features.ContainerSpecAddCapabilities != config.Disabled {
+	if config.FromContextOrDefaults(ctx).Features.ContainerSpecAddCapabilities == config.Enabled {
 		out.Add = in.Add
+	} else if config.FromContextOrDefaults(ctx).Features.SecurePodDefaults == config.Enabled {
+		if len(in.Add) == 1 && in.Add[0] == "NET_BIND_SERVICE" {
+			out.Add = in.Add
+		} else {
+			out.Add = nil
+		}
 	}
 
 	return out

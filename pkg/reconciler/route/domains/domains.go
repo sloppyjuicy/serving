@@ -19,15 +19,19 @@ package domains
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	network "knative.dev/networking/pkg"
+	netapi "knative.dev/networking/pkg/apis/networking"
 	netv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
+	netcfg "knative.dev/networking/pkg/config"
+	"knative.dev/networking/pkg/ingress"
 	"knative.dev/pkg/apis"
 	pkgnet "knative.dev/pkg/network"
 	"knative.dev/serving/pkg/apis/serving"
@@ -38,6 +42,8 @@ import (
 
 // HTTPScheme is the string representation of http.
 const HTTPScheme string = "http"
+
+var ErrDomainName = errors.New("domain name error")
 
 // GetAllDomainsAndTags returns all of the domains and tags(including subdomains) associated with a Route
 func GetAllDomainsAndTags(ctx context.Context, r *v1.Route, names []string, visibility map[string]netv1alpha1.IngressVisibility) (map[string]string, error) {
@@ -62,6 +68,28 @@ func GetAllDomainsAndTags(ctx context.Context, r *v1.Route, names []string, visi
 	return domainTagMap, nil
 }
 
+// GetDomainsForVisibility return all domains for the specified visibility.
+func GetDomainsForVisibility(ctx context.Context, targetName string, r *v1.Route, visibility netv1alpha1.IngressVisibility) (sets.Set[string], error) {
+	hostname, err := HostnameFromTemplate(ctx, r.Name, targetName)
+	if err != nil {
+		return nil, err
+	}
+
+	meta := r.ObjectMeta.DeepCopy()
+	isClusterLocal := visibility == netv1alpha1.IngressVisibilityClusterLocal
+	labels.SetVisibility(meta, isClusterLocal)
+
+	domain, err := DomainNameFromTemplate(ctx, *meta, hostname)
+	if err != nil {
+		return nil, err
+	}
+	domains := []string{domain}
+	if isClusterLocal {
+		domains = sets.List(ingress.ExpandedHosts(sets.New(domains...)))
+	}
+	return sets.New(domains...), err
+}
+
 // DomainNameFromTemplate generates domain name base on the template specified in the `config-network` ConfigMap.
 // name is the "subdomain" which will be referred as the "name" in the template
 func DomainNameFromTemplate(ctx context.Context, r metav1.ObjectMeta, name string) (string, error) {
@@ -72,7 +100,7 @@ func DomainNameFromTemplate(ctx context.Context, r metav1.ObjectMeta, name strin
 	// These are the available properties they can choose from.
 	// We could add more over time - e.g. RevisionName if we thought that
 	// might be of interest to people.
-	data := network.DomainTemplateValues{
+	data := netcfg.DomainTemplateValues{
 		Name:        name,
 		Namespace:   r.Namespace,
 		Domain:      domain,
@@ -86,20 +114,20 @@ func DomainNameFromTemplate(ctx context.Context, r metav1.ObjectMeta, name strin
 	var templ *template.Template
 	// If the route is "cluster local" then don't use the user-defined
 	// domain template, use the default one
-	if rLabels[network.VisibilityLabelKey] == serving.VisibilityClusterLocal {
+	if rLabels[netapi.VisibilityLabelKey] == serving.VisibilityClusterLocal {
 		templ = template.Must(template.New("domain-template").Parse(
-			network.DefaultDomainTemplate))
+			netcfg.DefaultDomainTemplate))
 	} else {
 		templ = networkConfig.GetDomainTemplate()
 	}
 
 	if err := templ.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("error executing the DomainTemplate: %w", err)
+		return "", fmt.Errorf("%w: error executing the DomainTemplate: %w", ErrDomainName, err)
 	}
 
 	urlErrs := validation.IsFullyQualifiedDomainName(field.NewPath("url"), buf.String())
 	if urlErrs != nil {
-		return "", fmt.Errorf("invalid domain name %q: %w", buf.String(), urlErrs.ToAggregate())
+		return "", fmt.Errorf("%w: invalid domain name %q: %w", ErrDomainName, buf.String(), urlErrs.ToAggregate())
 	}
 
 	return buf.String(), nil
@@ -114,7 +142,7 @@ func HostnameFromTemplate(ctx context.Context, name, tag string) (string, error)
 	// These are the available properties they can choose from.
 	// We could add more over time - e.g. RevisionName if we thought that
 	// might be of interest to people.
-	data := network.TagTemplateValues{
+	data := netcfg.TagTemplateValues{
 		Name: name,
 		Tag:  tag,
 	}
@@ -122,7 +150,7 @@ func HostnameFromTemplate(ctx context.Context, name, tag string) (string, error)
 	networkConfig := config.FromContext(ctx).Network
 	buf := bytes.Buffer{}
 	if err := networkConfig.GetTagTemplate().Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("error executing the TagTemplate: %w", err)
+		return "", fmt.Errorf("%w: error executing the TagTemplate: %w", ErrDomainName, err)
 	}
 	return buf.String(), nil
 }

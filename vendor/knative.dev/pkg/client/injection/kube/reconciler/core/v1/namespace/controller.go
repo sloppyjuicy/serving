@@ -1,5 +1,5 @@
 /*
-Copyright 2021 The Knative Authors
+Copyright 2022 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ import (
 
 const (
 	defaultControllerAgentName = "namespace-controller"
-	defaultFinalizerName       = "namespaces.core"
+	defaultFinalizerName       = "namespaces."
 )
 
 // NewImpl returns a controller.Impl that handles queuing and feeding work from
@@ -62,10 +62,15 @@ func NewImpl(ctx context.Context, r Interface, optionsFns ...controller.OptionsF
 	lister := namespaceInformer.Lister()
 
 	var promoteFilterFunc func(obj interface{}) bool
+	var promoteFunc = func(bkt reconciler.Bucket) {}
 
 	rec := &reconcilerImpl{
 		LeaderAwareFuncs: reconciler.LeaderAwareFuncs{
 			PromoteFunc: func(bkt reconciler.Bucket, enq func(reconciler.Bucket, types.NamespacedName)) error {
+
+				// Signal promotion event
+				promoteFunc(bkt)
+
 				all, err := lister.List(labels.Everything())
 				if err != nil {
 					return err
@@ -96,7 +101,7 @@ func NewImpl(ctx context.Context, r Interface, optionsFns ...controller.OptionsF
 
 	logger = logger.With(
 		zap.String(logkey.ControllerType, ctrTypeName),
-		zap.String(logkey.Kind, "core.Namespace"),
+		zap.String(logkey.Kind, ".Namespace"),
 	)
 
 	impl := controller.NewContext(ctx, rec, controller.ControllerOptions{WorkQueueName: ctrTypeName, Logger: logger})
@@ -122,6 +127,9 @@ func NewImpl(ctx context.Context, r Interface, optionsFns ...controller.OptionsF
 		}
 		if opts.PromoteFilterFunc != nil {
 			promoteFilterFunc = opts.PromoteFilterFunc
+		}
+		if opts.PromoteFunc != nil {
+			promoteFunc = opts.PromoteFunc
 		}
 	}
 

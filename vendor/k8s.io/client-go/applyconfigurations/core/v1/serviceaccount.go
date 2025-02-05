@@ -27,7 +27,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// ServiceAccountApplyConfiguration represents an declarative configuration of the ServiceAccount type for use
+// ServiceAccountApplyConfiguration represents a declarative configuration of the ServiceAccount type for use
 // with apply.
 type ServiceAccountApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -37,7 +37,7 @@ type ServiceAccountApplyConfiguration struct {
 	AutomountServiceAccountToken     *bool                                    `json:"automountServiceAccountToken,omitempty"`
 }
 
-// ServiceAccount constructs an declarative configuration of the ServiceAccount type for use with
+// ServiceAccount constructs a declarative configuration of the ServiceAccount type for use with
 // apply.
 func ServiceAccount(name, namespace string) *ServiceAccountApplyConfiguration {
 	b := &ServiceAccountApplyConfiguration{}
@@ -51,7 +51,7 @@ func ServiceAccount(name, namespace string) *ServiceAccountApplyConfiguration {
 // ExtractServiceAccount extracts the applied configuration owned by fieldManager from
 // serviceAccount. If no managedFields are found in serviceAccount for fieldManager, a
 // ServiceAccountApplyConfiguration is returned with only the Name, Namespace (if applicable),
-// APIVersion and Kind populated. Is is possible that no managed fields were found for because other
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
 // field managers have taken ownership of all the fields previously owned by fieldManager, or because
 // the fieldManager never owned fields any fields.
 // serviceAccount must be a unmodified ServiceAccount API object that was retrieved from the Kubernetes API.
@@ -60,8 +60,19 @@ func ServiceAccount(name, namespace string) *ServiceAccountApplyConfiguration {
 // applied if another fieldManager has updated or force applied any of the previously applied fields.
 // Experimental!
 func ExtractServiceAccount(serviceAccount *apicorev1.ServiceAccount, fieldManager string) (*ServiceAccountApplyConfiguration, error) {
+	return extractServiceAccount(serviceAccount, fieldManager, "")
+}
+
+// ExtractServiceAccountStatus is the same as ExtractServiceAccount except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractServiceAccountStatus(serviceAccount *apicorev1.ServiceAccount, fieldManager string) (*ServiceAccountApplyConfiguration, error) {
+	return extractServiceAccount(serviceAccount, fieldManager, "status")
+}
+
+func extractServiceAccount(serviceAccount *apicorev1.ServiceAccount, fieldManager string, subresource string) (*ServiceAccountApplyConfiguration, error) {
 	b := &ServiceAccountApplyConfiguration{}
-	err := managedfields.ExtractInto(serviceAccount, internal.Parser().Type("io.k8s.api.core.v1.ServiceAccount"), fieldManager, b)
+	err := managedfields.ExtractInto(serviceAccount, internal.Parser().Type("io.k8s.api.core.v1.ServiceAccount"), fieldManager, b, subresource)
 	if err != nil {
 		return nil, err
 	}
@@ -113,15 +124,6 @@ func (b *ServiceAccountApplyConfiguration) WithGenerateName(value string) *Servi
 func (b *ServiceAccountApplyConfiguration) WithNamespace(value string) *ServiceAccountApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
-	return b
-}
-
-// WithSelfLink sets the SelfLink field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SelfLink field is set to the value of the last call.
-func (b *ServiceAccountApplyConfiguration) WithSelfLink(value string) *ServiceAccountApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.SelfLink = &value
 	return b
 }
 
@@ -234,15 +236,6 @@ func (b *ServiceAccountApplyConfiguration) WithFinalizers(values ...string) *Ser
 	return b
 }
 
-// WithClusterName sets the ClusterName field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ClusterName field is set to the value of the last call.
-func (b *ServiceAccountApplyConfiguration) WithClusterName(value string) *ServiceAccountApplyConfiguration {
-	b.ensureObjectMetaApplyConfigurationExists()
-	b.ClusterName = &value
-	return b
-}
-
 func (b *ServiceAccountApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
@@ -281,4 +274,10 @@ func (b *ServiceAccountApplyConfiguration) WithImagePullSecrets(values ...*Local
 func (b *ServiceAccountApplyConfiguration) WithAutomountServiceAccountToken(value bool) *ServiceAccountApplyConfiguration {
 	b.AutomountServiceAccountToken = &value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *ServiceAccountApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

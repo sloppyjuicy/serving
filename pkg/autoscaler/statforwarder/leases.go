@@ -19,6 +19,8 @@ package statforwarder
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 
 	"go.uber.org/zap"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -173,7 +175,7 @@ func (f *leaseTracker) leaseUpdated(obj interface{}) {
 
 	if ip != f.selfIP {
 		f.fwd.setProcessor(n, newForwardProcessor(f.logger.With(zap.String("bucket", n)), n, holder,
-			fmt.Sprintf("ws://%s:%d", ip, autoscalerPort),
+			"ws://"+net.JoinHostPort(ip, strconv.Itoa(autoscalerPort)),
 			fmt.Sprintf("ws://%s.%s.%s", n, ns, svcURLSuffix)))
 
 		// Skip creating/updating Service and Endpoints if not the leader.
@@ -202,7 +204,7 @@ func (f *leaseTracker) leaseUpdated(obj interface{}) {
 
 func (f *leaseTracker) createService(ctx context.Context, ns, n string) error {
 	var lastErr error
-	if err := wait.PollImmediate(retryInterval, retryTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, retryInterval, retryTimeout, true, func(context.Context) (bool, error) {
 		_, lastErr = f.kc.CoreV1().Services(ns).Create(ctx, &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      n,
@@ -242,12 +244,12 @@ func (f *leaseTracker) createOrUpdateEndpoints(ctx context.Context, ns, n string
 			Name:     autoscalerPortName,
 			Port:     autoscalerPort,
 			Protocol: corev1.ProtocolTCP,
-		}}},
-	}
+		}},
+	}}
 
 	exists := true
 	var lastErr error
-	if err := wait.PollImmediate(retryInterval, retryTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, retryInterval, retryTimeout, true, func(context.Context) (bool, error) {
 		e, err := f.endpointsLister.Endpoints(ns).Get(n)
 		if apierrs.IsNotFound(err) {
 			exists = false
@@ -257,7 +259,7 @@ func (f *leaseTracker) createOrUpdateEndpoints(ctx context.Context, ns, n string
 		if err != nil {
 			lastErr = err
 			// Do not return the error to cause a retry.
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		if equality.Semantic.DeepEqual(wantSubsets, e.Subsets) {
@@ -268,7 +270,7 @@ func (f *leaseTracker) createOrUpdateEndpoints(ctx context.Context, ns, n string
 		want.Subsets = wantSubsets
 		if _, lastErr = f.kc.CoreV1().Endpoints(ns).Update(ctx, want, metav1.UpdateOptions{}); lastErr != nil {
 			// Do not return the error to cause a retry.
-			return false, nil
+			return false, nil //nolint:nilerr
 		}
 
 		f.logger.Infof("Bucket Endpoints %s updated with IP %s", n, f.selfIP)
@@ -281,7 +283,7 @@ func (f *leaseTracker) createOrUpdateEndpoints(ctx context.Context, ns, n string
 		return nil
 	}
 
-	if err := wait.PollImmediate(retryInterval, retryTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, retryInterval, retryTimeout, true, func(context.Context) (bool, error) {
 		_, lastErr = f.kc.CoreV1().Endpoints(ns).Create(ctx, &corev1.Endpoints{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      n,

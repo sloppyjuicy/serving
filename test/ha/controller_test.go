@@ -41,12 +41,16 @@ const (
 func TestControllerHA(t *testing.T) {
 	clients := e2e.Setup(t)
 
+	reconcilers := NumControllerReconcilers
+	if isNetCertmanagerControllerReconcilerOn(t, clients.KubeClient) {
+		reconcilers = NumControllerReconcilers + 1
+	}
 	if err := pkgTest.WaitForDeploymentScale(context.Background(), clients.KubeClient, controllerDeploymentName, system.Namespace(), test.ServingFlags.Replicas); err != nil {
 		t.Fatalf("Deployment %s not scaled to %d: %v", controllerDeploymentName, test.ServingFlags.Replicas, err)
 	}
 
 	// TODO(mattmoor): Once we switch to the new sharded leader election, we should use more than a single bucket here, but the test is still interesting.
-	leaders, err := pkgHa.WaitForNewLeaders(context.Background(), t, clients.KubeClient, controllerDeploymentName, system.Namespace(), sets.NewString(), NumControllerReconcilers*test.ServingFlags.Buckets)
+	leaders, err := pkgHa.WaitForNewLeaders(context.Background(), t, clients.KubeClient, controllerDeploymentName, system.Namespace(), sets.New[string](), reconcilers*test.ServingFlags.Buckets)
 	if err != nil {
 		t.Fatal("Failed to get leader:", err)
 	}
@@ -58,7 +62,7 @@ func TestControllerHA(t *testing.T) {
 	prober := test.RunRouteProber(t.Logf, clients, resources.Service.Status.URL.URL(), test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	defer test.AssertProberDefault(t, prober)
 
-	for _, leader := range leaders.List() {
+	for _, leader := range sets.List(leaders) {
 		if err := clients.KubeClient.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
 			metav1.DeleteOptions{}); err != nil && !apierrs.IsNotFound(err) {
 			t.Fatalf("Failed to delete pod %s: %v", leader, err)

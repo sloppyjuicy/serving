@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 var (
@@ -113,7 +113,7 @@ func TestRequestLogHandler(t *testing.T) {
 				resp := httptest.NewRecorder()
 				req := httptest.NewRequest(http.MethodPost, test.url, bytes.NewBufferString(test.body))
 				if test.isProbe {
-					req.Header.Set(network.ProbeHeaderName, "activator")
+					req.Header.Set(netheader.ProbeKey, "activator")
 				}
 				handler.ServeHTTP(resp, req)
 
@@ -242,7 +242,7 @@ func BenchmarkRequestLogHandlerNoTemplate(b *testing.B) {
 	resp := httptest.NewRecorder()
 
 	b.Run("sequential", func(b *testing.B) {
-		for j := 0; j < b.N; j++ {
+		for range b.N {
 			handler.ServeHTTP(resp, req)
 		}
 	})
@@ -267,7 +267,7 @@ func BenchmarkRequestLogHandlerDefaultTemplate(b *testing.B) {
 	resp := httptest.NewRecorder()
 
 	b.Run("sequential", func(b *testing.B) {
-		for j := 0; j < b.N; j++ {
+		for range b.N {
 			handler.ServeHTTP(resp, req)
 		}
 	})

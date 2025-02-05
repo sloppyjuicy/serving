@@ -26,7 +26,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	network "knative.dev/networking/pkg"
+	netheader "knative.dev/networking/pkg/http/header"
 )
 
 const (
@@ -52,7 +52,8 @@ var (
 )
 
 func TestHTTPScrapeClientScrapeHappyCaseWithOptionals(t *testing.T) {
-	hClient := newTestHTTPClient(makeProtoResponse(http.StatusOK, stat, network.ProtoAcceptContent), nil)
+	//nolint:bodyclose
+	hClient := newTestHTTPClient(makeProtoResponse(http.StatusOK, stat, netheader.ProtobufMIMEType), nil)
 	sClient := newHTTPScrapeClient(hClient)
 	req, err := http.NewRequest(http.MethodGet, testURL, nil)
 	if err != nil {
@@ -95,10 +96,26 @@ func TestHTTPScrapeClientScrapeProtoErrorCases(t *testing.T) {
 		responseCode: http.StatusOK,
 		responseType: "text/html",
 		expectedErr:  errUnsupportedMetricType.Error(),
+	}, {
+		name:         "LongStat",
+		responseCode: http.StatusOK,
+		responseType: "application/protobuf",
+		stat: Stat{
+			// We don't expect PodName to be 600 characters long
+			PodName:                          strings.Repeat("a123456789", 60),
+			AverageConcurrentRequests:        1.1,
+			AverageProxiedConcurrentRequests: 1.1,
+			RequestCount:                     33.2,
+			ProxiedRequestCount:              33.2,
+			ProcessUptime:                    12345.678,
+			Timestamp:                        1697431278,
+		},
+		expectedErr: "unmarshalling failed: unexpected EOF",
 	}}
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
+			//nolint:bodyclose
 			hClient := newTestHTTPClient(makeProtoResponse(test.responseCode, test.stat, test.responseType), test.responseErr)
 			sClient := newHTTPScrapeClient(hClient)
 			req, err := http.NewRequest(http.MethodGet, testURL, nil)
@@ -180,7 +197,7 @@ func BenchmarkUnmarshallingProtoData(b *testing.B) {
 			b.Fatal(err)
 		}
 		b.Run(bm.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				_, err = statFromProto(bytes.NewReader(bodyBytes))
 				if err != nil {
 					b.Fatal(err)

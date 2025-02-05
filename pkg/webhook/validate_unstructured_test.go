@@ -34,15 +34,13 @@ import (
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 )
 
-var (
-	validMetadata = map[string]interface{}{
-		"name":      "valid",
-		"namespace": "foo",
-		"annotations": map[string]interface{}{
-			"features.knative.dev/podspec-dryrun": "enabled",
-		},
-	}
-)
+var validMetadata = map[string]interface{}{
+	"name":      "valid",
+	"namespace": "foo",
+	"annotations": map[string]interface{}{
+		config.DryRunFeatureKey: "enabled",
+	},
+}
 
 func TestUnstructuredValidation(t *testing.T) {
 	tests := []struct {
@@ -139,7 +137,7 @@ func TestDryRunFeatureFlag(t *testing.T) {
 				"name":      "valid",
 				"namespace": "foo",
 				"annotations": map[string]interface{}{
-					"features.knative.dev/podspec-dryrun": "strict",
+					config.DryRunFeatureKey: "strict",
 				},
 			},
 			"spec": true, // Invalid, spec is expected to be a struct
@@ -153,7 +151,7 @@ func TestDryRunFeatureFlag(t *testing.T) {
 				"name":      "invalid",
 				"namespace": "foo",
 				"annotations": map[string]interface{}{
-					"features.knative.dev/podspec-dryrun": "enabled",
+					config.DryRunFeatureKey: "enabled",
 				},
 			},
 			"spec": true, // Invalid, spec is expected to be a struct
@@ -167,7 +165,7 @@ func TestDryRunFeatureFlag(t *testing.T) {
 				"name":      "invalid",
 				"namespace": "foo",
 				"annotations": map[string]interface{}{
-					"features.knative.dev/podspec-dryrun": "strict",
+					config.DryRunFeatureKey: "strict",
 				},
 			},
 			"spec": true, // Invalid, spec is expected to be a struct
@@ -206,7 +204,7 @@ func TestSkipUpdate(t *testing.T) {
 	validService := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				"features.knative.dev/podspec-dryrun": "enabled",
+				config.DryRunFeatureKey: "enabled",
 			},
 		},
 		Spec: v1.ServiceSpec{

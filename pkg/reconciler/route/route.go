@@ -28,16 +28,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubelabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/utils/clock"
 
-	network "knative.dev/networking/pkg"
 	"knative.dev/networking/pkg/apis/networking"
 	netv1alpha1 "knative.dev/networking/pkg/apis/networking/v1alpha1"
 	netclientset "knative.dev/networking/pkg/client/clientset/versioned"
 	networkinglisters "knative.dev/networking/pkg/client/listers/networking/v1alpha1"
+	netcfg "knative.dev/networking/pkg/config"
 	"knative.dev/pkg/apis"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
 	"knative.dev/pkg/controller"
@@ -79,6 +79,8 @@ type Reconciler struct {
 	enqueueAfter func(interface{}, time.Duration)
 }
 
+const errorConfigMsg = "ErrorConfig"
+
 // Check that our Reconciler implements routereconciler.Interface
 var _ routereconciler.Interface = (*Reconciler)(nil)
 
@@ -98,7 +100,7 @@ func certClass(ctx context.Context, r *v1.Route) string {
 
 // ReconcileKind implements Interface.ReconcileKind.
 func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconciler.Event {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, pkgreconciler.DefaultTimeout)
 	defer cancel()
 
 	logger := logging.FromContext(ctx)
@@ -109,7 +111,7 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 	// reconciliation.  For instance, if we were to hit an error creating new placeholder
 	// service, we might report "Ready: True" with a bumped ObservedGeneration without
 	// having updated the kingress at all!
-	// We hit this in: https://github.com/knative-sandbox/net-contour/issues/238
+	// We hit this in: https://github.com/knative-extensions/net-contour/issues/238
 	if r.GetObjectMeta().GetGeneration() != r.Status.ObservedGeneration {
 		r.Status.MarkIngressNotConfigured()
 	}
@@ -118,7 +120,11 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 	traffic, err := c.configureTraffic(ctx, r)
 	if traffic == nil || err != nil {
 		if err != nil {
-			r.Status.MarkUnknownTrafficError(err.Error())
+			if errors.Is(err, domains.ErrDomainName) {
+				r.Status.MarkRevisionTargetTrafficError(errorConfigMsg, err.Error())
+			} else {
+				r.Status.MarkUnknownTrafficError(err.Error())
+			}
 		}
 		// Traffic targets aren't ready, no need to configure child resources.
 		return err
@@ -137,10 +143,23 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 		return err
 	}
 
-	tls, acmeChallenges, err := c.tls(ctx, r.Status.URL.Host, r, traffic)
+	tls, acmeChallenges, desiredCerts, err := c.externalDomainTLS(ctx, r.Status.URL.Host, r, traffic)
 	if err != nil {
 		return err
 	}
+
+	if config.FromContext(ctx).Network.ClusterLocalDomainTLS == netcfg.EncryptionEnabled {
+		internalTLS, err := c.clusterLocalDomainTLS(ctx, r, traffic)
+		if err != nil {
+			return err
+		}
+		tls = append(tls, internalTLS...)
+	} else if externalDomainTLSEnabled(ctx, r) && len(desiredCerts) == 0 {
+		// If external TLS is enabled but we have no desired certs then the route
+		// must have only cluster local hosts
+		r.Status.MarkTLSNotEnabled(v1.TLSNotEnabledForClusterLocalMessage)
+	}
+
 	// Reconcile ingress and its children resources.
 	ingress, effectiveRO, err := c.reconcileIngress(ctx, r, traffic, tls, ingressClassForRoute(ctx, r), acmeChallenges...)
 	if err != nil {
@@ -180,21 +199,29 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 	return nil
 }
 
-func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic *traffic.Config) ([]netv1alpha1.IngressTLS, []netv1alpha1.HTTP01Challenge, error) {
+func (c *Reconciler) externalDomainTLS(ctx context.Context, host string, r *v1.Route, traffic *traffic.Config) (
+	[]netv1alpha1.IngressTLS,
+	[]netv1alpha1.HTTP01Challenge,
+	[]*netv1alpha1.Certificate,
+	error,
+) {
+	var desiredCerts []*netv1alpha1.Certificate
+	logger := logging.FromContext(ctx)
+
 	tls := []netv1alpha1.IngressTLS{}
-	if !autoTLSEnabled(ctx, r) {
-		r.Status.MarkTLSNotEnabled(v1.AutoTLSNotEnabledMessage)
-		return tls, nil, nil
+	if !externalDomainTLSEnabled(ctx, r) {
+		r.Status.MarkTLSNotEnabled(v1.ExternalDomainTLSNotEnabledMessage)
+		return tls, nil, desiredCerts, nil
 	}
 
 	domainToTagMap, err := domains.GetAllDomainsAndTags(ctx, r, getTrafficNames(traffic.Targets), traffic.Visibility)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, desiredCerts, err
 	}
 
 	for domain := range domainToTagMap {
+		// Ignore cluster local domains here, as their TLS is handled in clusterLocalDomainTLS
 		if domains.IsClusterLocal(domain) {
-			r.Status.MarkTLSNotEnabled(v1.TLSNotEnabledForClusterLocalMessage)
 			delete(domainToTagMap, domain)
 		}
 	}
@@ -206,13 +233,17 @@ func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic 
 
 	allWildcardCerts, err := c.certificateLister.Certificates(r.Namespace).List(labelSelector)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, desiredCerts, err
 	}
 
+	domainConfig := config.FromContext(ctx).Domain
+	rLabels := r.Labels
+	domain := domainConfig.LookupDomainForLabels(rLabels)
+
 	acmeChallenges := []netv1alpha1.HTTP01Challenge{}
-	desiredCerts := resources.MakeCertificates(r, domainToTagMap, certClass(ctx, r))
+	desiredCerts = resources.MakeCertificates(r, domainToTagMap, certClass(ctx, r), domain)
 	for _, desiredCert := range desiredCerts {
-		dnsNames := sets.NewString(desiredCert.Spec.DNSNames...)
+		dnsNames := sets.New(desiredCert.Spec.DNSNames...)
 		// Look for a matching wildcard cert before provisioning a new one. This saves the
 		// the time required to provision a new cert and reduces the chances of hitting the
 		// Let's Encrypt API rate limits.
@@ -224,11 +255,11 @@ func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic 
 				if kaccessor.IsNotOwned(err) {
 					r.Status.MarkCertificateNotOwned(desiredCert.Name)
 				} else {
-					r.Status.MarkCertificateProvisionFailed(desiredCert.Name)
+					r.Status.MarkCertificateProvisionFailed(desiredCert)
 				}
-				return nil, nil, err
+				return nil, nil, desiredCerts, err
 			}
-			dnsNames = sets.NewString(cert.Spec.DNSNames...)
+			dnsNames = sets.New(cert.Spec.DNSNames...)
 		}
 
 		// r.Status.URL is for the major domain, so only change if the cert is for
@@ -238,24 +269,43 @@ func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic 
 		}
 		// TODO: we should only mark https for the public visible targets when
 		// we are able to configure visibility per target.
-		setTargetsScheme(&r.Status, dnsNames.List(), "https")
+		setTargetsScheme(&r.Status, sets.List(dnsNames), "https")
+
 		if cert.IsReady() {
+			if renewingCondition := cert.Status.GetCondition("Renewing"); renewingCondition != nil {
+				if renewingCondition.Status == corev1.ConditionTrue {
+					logger.Infof("Renewing Condition detected on Cert (%s), will attempt creating new challenges.", cert.Name)
+					if len(cert.Status.HTTP01Challenges) == 0 {
+						// Not sure log level this should be at.
+						// It is possible for certs to be renewed without getting
+						// validated again, for example, LetsEncrypt will cache
+						// validation results. See
+						// [here](https://letsencrypt.org/docs/faq/#i-successfully-renewed-a-certificate-but-validation-didn-t-happen-this-time-how-is-that-possible)
+						logger.Infof("No HTTP01Challenges found on Cert (%s).", cert.Name)
+					}
+					acmeChallenges = append(acmeChallenges, cert.Status.HTTP01Challenges...)
+				}
+			}
 			r.Status.MarkCertificateReady(cert.Name)
-			tls = append(tls, resources.MakeIngressTLS(cert, dnsNames.List()))
+			tls = append(tls, resources.MakeIngressTLS(cert, sets.List(dnsNames)))
 		} else {
 			acmeChallenges = append(acmeChallenges, cert.Status.HTTP01Challenges...)
-			r.Status.MarkCertificateNotReady(cert.Name)
+			if cert.IsFailed() {
+				r.Status.MarkCertificateProvisionFailed(cert)
+			} else {
+				r.Status.MarkCertificateNotReady(cert)
+			}
 			// When httpProtocol is enabled, downgrade http scheme.
 			// Explicitly not using the override settings here as to not to muck with
-			// AutoTLS semantics.
-			if config.FromContext(ctx).Network.HTTPProtocol == network.HTTPEnabled {
+			// external-domain-tls semantics.
+			if config.FromContext(ctx).Network.HTTPProtocol == netcfg.HTTPEnabled {
 				if dnsNames.Has(host) {
 					r.Status.URL = &apis.URL{
 						Scheme: "http",
 						Host:   host,
 					}
 				}
-				setTargetsScheme(&r.Status, dnsNames.List(), "http")
+				setTargetsScheme(&r.Status, sets.List(dnsNames), "http")
 				r.Status.MarkHTTPDowngrade(cert.Name)
 			}
 		}
@@ -264,28 +314,71 @@ func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic 
 		return acmeChallenges[i].URL.String() < acmeChallenges[j].URL.String()
 	})
 
-	orphanCerts, err := c.getOrphanRouteCerts(r, domainToTagMap)
+	orphanCerts, err := c.getOrphanRouteCerts(r, domainToTagMap, netcfg.CertificateExternalDomain)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, desiredCerts, err
 	}
 
-	recorder := controller.GetEventRecorder(ctx)
-	for _, cert := range orphanCerts {
-		err = c.GetNetworkingClient().NetworkingV1alpha1().Certificates(cert.Namespace).Delete(ctx, cert.Name, metav1.DeleteOptions{})
+	c.deleteOrphanedCerts(ctx, orphanCerts)
+
+	return tls, acmeChallenges, desiredCerts, nil
+}
+
+func (c *Reconciler) clusterLocalDomainTLS(ctx context.Context, r *v1.Route, tc *traffic.Config) ([]netv1alpha1.IngressTLS, error) {
+	tls := []netv1alpha1.IngressTLS{}
+	usedDomains := make(map[string]string)
+
+	for name := range tc.Targets {
+		localDomains, err := domains.GetDomainsForVisibility(ctx, name, r, netv1alpha1.IngressVisibilityClusterLocal)
 		if err != nil {
-			recorder.Eventf(cert, corev1.EventTypeNormal, "DeleteFailed",
-				"Failed to delete orphaned Knative Certificate %s/%s: %v", cert.Namespace, cert.Name, err)
+			return nil, err
+		}
+
+		desiredCert := resources.MakeClusterLocalCertificate(r, name, localDomains, certClass(ctx, r))
+		cert, err := networkaccessor.ReconcileCertificate(ctx, r, desiredCert, c)
+		if err != nil {
+			if kaccessor.IsNotOwned(err) {
+				r.Status.MarkCertificateNotOwned(desiredCert.Name)
+			} else {
+				r.Status.MarkCertificateProvisionFailed(desiredCert)
+			}
+			return nil, err
+		}
+
+		if cert.IsReady() {
+			r.Status.Address.URL.Scheme = "https"
+
+			// r.Status.URL contains the major domain,
+			// so only change if the cert is for the major domain
+			if localDomains.Has(r.Status.URL.Host) {
+				r.Status.URL.Scheme = "https"
+			}
+
+			r.Status.MarkCertificateReady(cert.Name)
+			tls = append(tls, resources.MakeIngressTLS(cert, sets.List(localDomains)))
+		} else if cert.IsFailed() {
+			r.Status.MarkCertificateProvisionFailed(cert)
 		} else {
-			recorder.Eventf(cert, corev1.EventTypeNormal, "Deleted",
-				"Deleted orphaned Knative Certificate %s/%s", cert.Namespace, cert.Name)
+			r.Status.MarkCertificateNotReady(cert)
+		}
+
+		for s := range localDomains {
+			usedDomains[s] = s
 		}
 	}
 
-	return tls, acmeChallenges, nil
+	orphanCerts, err := c.getOrphanRouteCerts(r, usedDomains, netcfg.CertificateClusterLocalDomain)
+	if err != nil {
+		return nil, nil
+	}
+
+	c.deleteOrphanedCerts(ctx, orphanCerts)
+
+	return tls, nil
 }
 
-// Returns a slice of certificates that used to belong route's old tags and are currently not in use.
-func (c *Reconciler) getOrphanRouteCerts(r *v1.Route, domainToTagMap map[string]string) ([]*netv1alpha1.Certificate, error) {
+// Returns a slice of certificates that used to belong route's old domains/tags for a specific visibility that are currently not in use.
+func (c *Reconciler) getOrphanRouteCerts(r *v1.Route, domainToTagMap map[string]string, certificateType netcfg.CertificateType) ([]*netv1alpha1.Certificate, error) {
 	labelSelector := kubelabels.SelectorFromSet(kubelabels.Set{
 		serving.RouteLabelKey: r.Name,
 	})
@@ -297,19 +390,35 @@ func (c *Reconciler) getOrphanRouteCerts(r *v1.Route, domainToTagMap map[string]
 
 	var unusedCerts []*netv1alpha1.Certificate
 	for _, cert := range certs {
-		var shouldKeepCert bool
-		for _, dn := range cert.Spec.DNSNames {
-			if _, used := domainToTagMap[dn]; used {
-				shouldKeepCert = true
+		if v, ok := cert.ObjectMeta.Labels[networking.CertificateTypeLabelKey]; ok && v == string(certificateType) {
+			var shouldKeepCert bool
+			for _, dn := range cert.Spec.DNSNames {
+				if _, used := domainToTagMap[dn]; used {
+					shouldKeepCert = true
+				}
 			}
-		}
 
-		if !shouldKeepCert {
-			unusedCerts = append(unusedCerts, cert)
+			if !shouldKeepCert {
+				unusedCerts = append(unusedCerts, cert)
+			}
 		}
 	}
 
 	return unusedCerts, nil
+}
+
+func (c *Reconciler) deleteOrphanedCerts(ctx context.Context, orphanCerts []*netv1alpha1.Certificate) {
+	recorder := controller.GetEventRecorder(ctx)
+	for _, cert := range orphanCerts {
+		err := c.GetNetworkingClient().NetworkingV1alpha1().Certificates(cert.Namespace).Delete(ctx, cert.Name, metav1.DeleteOptions{})
+		if err != nil {
+			recorder.Eventf(cert, corev1.EventTypeNormal, "DeleteFailed",
+				"Failed to delete orphaned Knative Certificate %s/%s: %v", cert.Namespace, cert.Name, err)
+		} else {
+			recorder.Eventf(cert, corev1.EventTypeNormal, "Deleted",
+				"Deleted orphaned Knative Certificate %s/%s", cert.Namespace, cert.Name)
+		}
+	}
 }
 
 // configureTraffic attempts to configure traffic based on the RouteSpec.  If there are missing
@@ -470,20 +579,20 @@ func setTargetsScheme(rs *v1.RouteStatus, dnsNames []string, scheme string) {
 	}
 }
 
-func autoTLSEnabled(ctx context.Context, r *v1.Route) bool {
-	if !config.FromContext(ctx).Network.AutoTLS {
+func externalDomainTLSEnabled(ctx context.Context, r *v1.Route) bool {
+	if !config.FromContext(ctx).Network.ExternalDomainTLS {
 		return false
 	}
 
 	logger := logging.FromContext(ctx)
-	annotationValue := networking.GetDisableAutoTLS(r.Annotations)
+	annotationValue := networking.GetDisableExternalDomainTLS(r.Annotations)
 
 	disabledByAnnotation, err := strconv.ParseBool(annotationValue)
 	if annotationValue != "" && err != nil {
 		// validation should've caught an invalid value here.
-		// if we have one anyways, assume not disabled and log a warning.
+		// if we have one anyway, assume not disabled and log a warning.
 		logger.Warnf("Invalid annotation value for %q. Value: %q",
-			networking.DisableAutoTLSAnnotationKey, annotationValue)
+			networking.DisableExternalDomainTLSAnnotationKey, annotationValue)
 	}
 
 	return !disabledByAnnotation
@@ -499,7 +608,7 @@ func findMatchingWildcardCert(ctx context.Context, domains []string, certs []*ne
 }
 
 func wildcardCertMatches(ctx context.Context, domains []string, cert *netv1alpha1.Certificate) bool {
-	dnsNames := make(sets.String, len(cert.Spec.DNSNames))
+	dnsNames := make(sets.Set[string], len(cert.Spec.DNSNames))
 	logger := logging.FromContext(ctx)
 
 	for _, dns := range cert.Spec.DNSNames {

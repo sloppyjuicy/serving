@@ -82,6 +82,7 @@ func TestRevisionValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := test.r.Validate(context.Background())
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); !cmp.Equal(got, want) {
 				t.Errorf("Validate (-want, +got): \n%s", cmp.Diff(want, got))
 			}
@@ -238,6 +239,7 @@ func TestRevisionLabelAnnotationValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := test.r.Validate(context.Background())
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); !cmp.Equal(got, want) {
 				t.Errorf("Validate (-want, +got): \n%s", cmp.Diff(want, got))
 			}
@@ -277,6 +279,7 @@ func TestContainerConcurrencyValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := serving.ValidateContainerConcurrency(context.Background(), &test.cc)
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); !cmp.Equal(got, want) {
 				t.Errorf("Validate (-want, +got): \n%s", cmp.Diff(want, got))
 			}
@@ -328,11 +331,13 @@ func TestRevisionSpecValidation(t *testing.T) {
 		rs: &RevisionSpec{
 			PodSpec: corev1.PodSpec{
 				Containers: []corev1.Container{{
+					Name:  "container-a",
 					Image: "busybox",
 					Ports: []corev1.ContainerPort{{
 						ContainerPort: 8881,
 					}},
 				}, {
+					Name:  "container-b",
 					Image: "helloworld",
 				}},
 			},
@@ -437,7 +442,9 @@ func TestRevisionSpecValidation(t *testing.T) {
 					Image: "helloworld",
 				}},
 			},
-			TimeoutSeconds: ptr.Int64(100),
+			TimeoutSeconds:              ptr.Int64(100),
+			ResponseStartTimeoutSeconds: ptr.Int64(0),
+			IdleTimeoutSeconds:          ptr.Int64(0),
 		},
 		wc: func(ctx context.Context) context.Context {
 			s := config.NewStore(logtesting.TestLogger(t))
@@ -448,8 +455,11 @@ func TestRevisionSpecValidation(t *testing.T) {
 					Name: config.DefaultsConfigName,
 				},
 				Data: map[string]string{
-					"revision-timeout-seconds":     "25",
-					"max-revision-timeout-seconds": "50"},
+					"revision-timeout-seconds":                "25",
+					"max-revision-timeout-seconds":            "50",
+					"revision-response-start-timeout-seconds": "10",
+					"revision-idle-timeout-seconds":           "10",
+				},
 			})
 			return s.ToContext(ctx)
 		},
@@ -476,6 +486,7 @@ func TestRevisionSpecValidation(t *testing.T) {
 				ctx = test.wc(ctx)
 			}
 			got := test.rs.Validate(ctx)
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); !cmp.Equal(got, want) {
 				t.Errorf("Validate (-want, +got): \n%s", cmp.Diff(want, got))
 			}
@@ -532,7 +543,9 @@ func TestImmutableFields(t *testing.T) {
 						Image: "helloworld",
 					}},
 				},
-				TimeoutSeconds: ptr.Int64(100),
+				TimeoutSeconds:              ptr.Int64(100),
+				ResponseStartTimeoutSeconds: ptr.Int64(0),
+				IdleTimeoutSeconds:          ptr.Int64(0),
 			},
 		},
 		old: &Revision{
@@ -545,7 +558,9 @@ func TestImmutableFields(t *testing.T) {
 						Image: "helloworld",
 					}},
 				},
-				TimeoutSeconds: ptr.Int64(100),
+				TimeoutSeconds:              ptr.Int64(100),
+				ResponseStartTimeoutSeconds: ptr.Int64(0),
+				IdleTimeoutSeconds:          ptr.Int64(0),
 			},
 		},
 		wc: func(ctx context.Context) context.Context {
@@ -557,8 +572,11 @@ func TestImmutableFields(t *testing.T) {
 					Name: config.DefaultsConfigName,
 				},
 				Data: map[string]string{
-					"revision-timeout-seconds":     "25",
-					"max-revision-timeout-seconds": "50"},
+					"revision-timeout-seconds":                "25",
+					"max-revision-timeout-seconds":            "50",
+					"revision-response-start-timeout-seconds": "10",
+					"revision-idle-timeout-seconds":           "10",
+				},
 			})
 			return s.ToContext(ctx)
 		},
@@ -757,6 +775,7 @@ func TestImmutableFields(t *testing.T) {
 				ctx = test.wc(ctx)
 			}
 			got := test.new.Validate(ctx)
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); got != want {
 				t.Errorf("Validate got: %s, want: %s, diff:(-want, +got)=\n%v", got, want, cmp.Diff(got, want))
 			}
@@ -926,6 +945,34 @@ func TestRevisionTemplateSpecValidation(t *testing.T) {
 			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarResourcePercentageAnnotationKey)},
 		}).ViaField("metadata.annotations"),
 	}, {
+		name: "Invalid queue sidecar resource annotations",
+		rts: &RevisionTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					serving.QueueSidecarCPUResourceLimitAnnotationKey:                "100mx",
+					serving.QueueSidecarCPUResourceRequestAnnotationKey:              "50mx",
+					serving.QueueSidecarMemoryResourceLimitAnnotationKey:             "1Gi",
+					serving.QueueSidecarMemoryResourceRequestAnnotationKey:           "100Mi",
+					serving.QueueSidecarEphemeralStorageResourceLimitAnnotationKey:   "5Gi",
+					serving.QueueSidecarEphemeralStorageResourceRequestAnnotationKey: "2Gi",
+				},
+			},
+			Spec: RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "helloworld",
+					}},
+				},
+			},
+		},
+		want: ((&apis.FieldError{
+			Message: "invalid value: 100mx",
+			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarCPUResourceLimitAnnotationKey)},
+		}).Also(&apis.FieldError{
+			Message: "invalid value: 50mx",
+			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarCPUResourceRequestAnnotationKey)},
+		})).ViaField("metadata.annotations"),
+	}, {
 		name: "Invalid initial scale when cluster doesn't allow zero",
 		ctx:  autoscalerConfigCtx(false, 1),
 		rts: &RevisionTemplateSpec{
@@ -944,7 +991,7 @@ func TestRevisionTemplateSpecValidation(t *testing.T) {
 		},
 		want: (&apis.FieldError{
 			Message: "invalid value: 0",
-			Paths:   []string{autoscaling.InitialScaleAnnotationKey},
+			Paths:   []string{autoscaling.InitialScaleAnnotationKey + "=0 not allowed by cluster"},
 		}).ViaField("metadata.annotations"),
 	}, {
 		name: "Valid initial scale when cluster allows zero",
@@ -964,6 +1011,87 @@ func TestRevisionTemplateSpecValidation(t *testing.T) {
 			},
 		},
 		want: nil,
+	}, {
+		name: "Valid progress-deadline",
+		ctx:  autoscalerConfigCtx(true, 1),
+		rts: &RevisionTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					serving.ProgressDeadlineAnnotationKey: "1m3s",
+				},
+			},
+			Spec: RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "helloworld",
+					}},
+				},
+			},
+		},
+		want: nil,
+	}, {
+		name: "progress-deadline too precise",
+		ctx:  autoscalerConfigCtx(true, 1),
+		rts: &RevisionTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					serving.ProgressDeadlineAnnotationKey: "1m3s34ms",
+				},
+			},
+			Spec: RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "helloworld",
+					}},
+				},
+			},
+		},
+		want: (&apis.FieldError{
+			Message: "progress-deadline=1m3s34ms is not at second precision",
+			Paths:   []string{serving.ProgressDeadlineAnnotationKey},
+		}).ViaField("metadata.annotations"),
+	}, {
+		name: "invalid progress-deadline duration",
+		ctx:  autoscalerConfigCtx(true, 1),
+		rts: &RevisionTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					serving.ProgressDeadlineAnnotationKey: "not-a-duration",
+				},
+			},
+			Spec: RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "helloworld",
+					}},
+				},
+			},
+		},
+		want: (&apis.FieldError{
+			Message: "invalid value: not-a-duration",
+			Paths:   []string{serving.ProgressDeadlineAnnotationKey},
+		}).ViaField("metadata.annotations"),
+	}, {
+		name: "negative progress-deadline",
+		ctx:  autoscalerConfigCtx(true, 1),
+		rts: &RevisionTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					serving.ProgressDeadlineAnnotationKey: "-1m3s",
+				},
+			},
+			Spec: RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "helloworld",
+					}},
+				},
+			},
+		},
+		want: (&apis.FieldError{
+			Message: "progress-deadline=-1m3s must be positive",
+			Paths:   []string{serving.ProgressDeadlineAnnotationKey},
+		}).ViaField("metadata.annotations"),
 	}}
 
 	for _, test := range tests {
@@ -977,6 +1105,7 @@ func TestRevisionTemplateSpecValidation(t *testing.T) {
 			})
 
 			got := test.rts.Validate(ctx)
+			got = got.Filter(apis.ErrorLevel)
 			if got, want := got.Error(), test.want.Error(); !cmp.Equal(got, want) {
 				t.Errorf("Validate (-want, +got):\n%s", cmp.Diff(want, got))
 			}
@@ -994,6 +1123,9 @@ func autoscalerConfigCtx(allowInitialScaleZero bool, initialScale int) context.C
 }
 
 func TestValidateQueueSidecarAnnotation(t *testing.T) {
+	resourcePercentageDeprecationWarning := apis.ErrGeneric("Queue proxy resource percentage annotation is deprecated. Please use the available annotations to explicitly set resource values per service").
+		ViaKey(serving.QueueSidecarResourcePercentageAnnotationKey).At(apis.WarningLevel)
+
 	cases := []struct {
 		name       string
 		annotation map[string]string
@@ -1003,28 +1135,28 @@ func TestValidateQueueSidecarAnnotation(t *testing.T) {
 		annotation: map[string]string{
 			serving.QueueSidecarResourcePercentageAnnotationKey: "0.01982",
 		},
-		expectErr: &apis.FieldError{
+		expectErr: (&apis.FieldError{
 			Message: "expected 0.1 <= 0.01982 <= 100",
 			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarResourcePercentageAnnotationKey)},
-		},
+		}).Also(resourcePercentageDeprecationWarning),
 	}, {
 		name: "too big for Queue sidecar resource percentage annotation",
 		annotation: map[string]string{
 			serving.QueueSidecarResourcePercentageAnnotationKey: "100.0001",
 		},
-		expectErr: &apis.FieldError{
+		expectErr: (&apis.FieldError{
 			Message: "expected 0.1 <= 100.0001 <= 100",
 			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarResourcePercentageAnnotationKey)},
-		},
+		}).Also(resourcePercentageDeprecationWarning),
 	}, {
 		name: "Invalid queue sidecar resource percentage annotation",
 		annotation: map[string]string{
 			serving.QueueSidecarResourcePercentageAnnotationKey: "",
 		},
-		expectErr: &apis.FieldError{
+		expectErr: (&apis.FieldError{
 			Message: "invalid value: ",
 			Paths:   []string{fmt.Sprintf("[%s]", serving.QueueSidecarResourcePercentageAnnotationKey)},
-		},
+		}).Also(resourcePercentageDeprecationWarning),
 	}, {
 		name:       "empty annotation",
 		annotation: map[string]string{},
@@ -1038,16 +1170,18 @@ func TestValidateQueueSidecarAnnotation(t *testing.T) {
 		annotation: map[string]string{
 			serving.QueueSidecarResourcePercentageAnnotationKey: "0.1",
 		},
+		expectErr: resourcePercentageDeprecationWarning,
 	}, {
 		name: "valid value for Queue sidecar resource percentage annotation",
 		annotation: map[string]string{
 			serving.QueueSidecarResourcePercentageAnnotationKey: "100",
 		},
+		expectErr: resourcePercentageDeprecationWarning,
 	}}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := validateQueueSidecarAnnotation(c.annotation)
+			err := validateQueueSidecarResourceAnnotations(c.annotation)
 			if got, want := err.Error(), c.expectErr.Error(); got != want {
 				t.Errorf("Got: %q want: %q", got, want)
 			}
